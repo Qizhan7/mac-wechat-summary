@@ -31,9 +31,11 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP(
     "wechat-summary",
     instructions=(
-        "微信群聊查询和 AI 总结工具。"
-        "可以读取群聊消息、搜索关键词、用 AI 总结群聊内容、管理分组。"
+        "微信群聊查询、AI 总结和消息发送工具。"
+        "可以读取群聊/私聊消息、搜索关键词、用 AI 总结内容、管理分组、"
+        "以及通过微信桌面端发送消息。"
         "首次使用请先调用 get_status 确认连接状态。"
+        "发送消息前务必向用户确认内容和目标。"
     ),
 )
 
@@ -677,6 +679,35 @@ def get_ai_config() -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"获取配置失败: {e}"
+
+
+# ── E. 消息发送 ──────────────────────────────────────────
+
+
+@mcp.tool()
+def send_message(text: str, chat_name: str = "") -> str:
+    """通过微信桌面端发送消息。
+
+    使用 macOS AppleScript UI 自动化控制微信桌面端。
+    需要微信已登录并在前台，运行此工具的 app 需要辅助功能权限。
+
+    ⚠️ 重要：发送前请向用户确认消息内容和发送目标！
+
+    Args:
+        text: 要发送的消息内容
+        chat_name: 目标聊天名称（群名或联系人名）。
+                   留空则发送到微信当前打开的聊天。
+    """
+    try:
+        from core.sender import send_message as _send
+
+        target = chat_name if chat_name else None
+        ok, msg = _send(text, target)
+        return msg
+    except ImportError:
+        return "❌ 发送模块未找到，请确认 core/sender.py 存在"
+    except Exception as e:
+        return f"❌ 发送失败: {e}"
 
 
 # ── 入口 ─────────────────────────────────────────────────
