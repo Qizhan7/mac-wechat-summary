@@ -72,9 +72,10 @@ def select_chat(chat_name: str) -> tuple[bool, str]:
                 keystroke "a" using command down
                 delay 0.1
                 keystroke "v" using command down
-                delay 0.2
+                delay 0.1
 
                 -- 立刻回车！在网络搜索结果加载之前，联系人还在第一位
+                -- 0.1s：本地结果已渲染，网络结果还没加载（实测最佳值）
                 key code 36
                 delay 0.8
 
