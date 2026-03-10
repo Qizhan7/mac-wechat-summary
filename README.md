@@ -61,7 +61,8 @@ macOS 菜单栏应用，一键总结微信群聊消息。
 
 ## 致谢
 
-本项目的微信数据库解密方案参考了 [ylytdeng/wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt)，在此基础上进行了改进和扩展，包括密钥自动提取、多数据库支持、增量总结等功能。
+- [ylytdeng/wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt) — 微信数据库解密方案参考，本项目在此基础上进行了改进和扩展
+- [Sue](https://github.com/smoonsue) — 测试与反馈
 
 ## License
 
