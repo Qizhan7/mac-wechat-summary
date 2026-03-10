@@ -75,7 +75,12 @@ AI_PROVIDERS = [
     ("openai", "OpenAI"),
 ]
 
-# 菜单栏标题：emoji 后加一个空格，强制 macOS 分配稳定宽度，防止裁切
+# 菜单栏图标：优先使用 PNG 图片（更可靠），emoji 作为 fallback
+_ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources")
+ICON_PNG = os.path.join(_ICON_DIR, "icon.png")
+_USE_PNG_ICON = os.path.isfile(ICON_PNG)
+
+# emoji 后加一个空格，强制 macOS 分配稳定宽度，防止裁切
 ICON_NORMAL = "💬 "
 ICON_LOADING = "⏳ "
 ICON_DONE = "✅ "
@@ -96,7 +101,11 @@ def _wechat_signing_message():
 
 class WeChatSummaryApp(rumps.App):
     def __init__(self):
-        super().__init__("微信总结", title=ICON_NORMAL, quit_button="退出")
+        if _USE_PNG_ICON:
+            super().__init__("微信总结", icon=ICON_PNG, template=True, quit_button="退出")
+            self.title = None  # 仅显示图标，不显示文字
+        else:
+            super().__init__("微信总结", title=ICON_NORMAL, quit_button="退出")
         self.config = load_config()
         self.db = None
         self.ai = None
@@ -139,9 +148,13 @@ class WeChatSummaryApp(rumps.App):
     def _set_status(self, new_title):
         """安全设置菜单栏标题，先清空再设置以强制 macOS 重新布局"""
         try:
-            self.title = " "       # 先设一个占位空格
-            time.sleep(0.05)       # 给 macOS 一点时间释放旧宽度
-            self.title = new_title # 再设新的 emoji
+            if _USE_PNG_ICON:
+                # 有图标时：正常状态只显示图标，其他状态在图标旁显示 emoji
+                self.title = None if new_title == ICON_NORMAL else new_title
+            else:
+                self.title = " "       # 先设一个占位空格
+                time.sleep(0.05)       # 给 macOS 一点时间释放旧宽度
+                self.title = new_title # 再设新的 emoji
         except Exception:
             self.title = new_title
 
