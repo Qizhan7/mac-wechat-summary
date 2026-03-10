@@ -381,7 +381,7 @@ class WeChatDB:
             if since_ts > 0:
                 rows = conn.execute(f"""
                     SELECT local_type, create_time, message_content,
-                           WCDB_CT_message_content
+                           WCDB_CT_message_content, status
                     FROM [{table_name}]
                     WHERE create_time > ?
                     ORDER BY create_time ASC
@@ -390,7 +390,7 @@ class WeChatDB:
             else:
                 rows = conn.execute(f"""
                     SELECT local_type, create_time, message_content,
-                           WCDB_CT_message_content
+                           WCDB_CT_message_content, status
                     FROM [{table_name}]
                     ORDER BY create_time DESC
                     LIMIT ?
@@ -401,8 +401,13 @@ class WeChatDB:
         finally:
             conn.close()
 
+        # 私聊时，用联系人显示名标注对方消息
+        contact_name = ""
+        if not is_group:
+            contact_name = self._contacts.get(username, username)
+
         messages = []
-        for local_type, create_time, content, ct in rows:
+        for local_type, create_time, content, ct, status in rows:
             # zstd 解压
             if ct and ct == 4 and isinstance(content, bytes):
                 try:
@@ -423,6 +428,13 @@ class WeChatDB:
             if is_group and ":\n" in content:
                 sender, text = content.split(":\n", 1)
                 sender = self._contacts.get(sender, sender)
+            elif not is_group:
+                # 私聊：status=2 是自己发的，status=3 是对方发的
+                sender = "我" if status == 2 else contact_name
+
+            # 群聊中自己发的消息没有 wxid:\n 前缀，sender 会是空的
+            if is_group and not sender and status == 2:
+                sender = "我"
 
             # 清理 XML 特殊消息
             cleaned = _clean_msg_text(text)
