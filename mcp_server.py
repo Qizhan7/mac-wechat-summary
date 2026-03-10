@@ -133,23 +133,46 @@ def get_status() -> str:
 
 
 @mcp.tool()
-def list_groups() -> str:
-    """列出所有微信群聊，包含群名和群 ID。
+def list_chats(chat_type: str = "all") -> str:
+    """列出微信群聊和/或私聊联系人。
 
-    用于查看有哪些群聊可以读取和总结。
+    Args:
+        chat_type: 筛选类型
+            - "all": 列出群聊和私聊（默认）
+            - "group": 只列出群聊
+            - "private": 只列出私聊联系人
     """
     try:
         db = _get_db()
-        groups = db.get_groups()
-        if not groups:
-            return "没有找到群聊。确保微信已登录且数据库已解密。"
+        db._load_contacts()
 
-        lines = [f"共 {len(groups)} 个群聊：\n"]
-        for g in groups:
-            lines.append(f"  • {g['name']}")
+        groups = []
+        privates = []
+        for c in db._contacts_full:
+            name = c["remark"] or c["nick_name"] or c["username"]
+            if "@chatroom" in c["username"]:
+                groups.append(name)
+            elif not c["username"].startswith("gh_") and "@" not in c["username"]:
+                # 排除公众号(gh_)和特殊账号
+                privates.append(name)
+
+        lines = []
+        if chat_type in ("all", "group"):
+            lines.append(f"群聊（{len(groups)}个）：\n")
+            for name in groups:
+                lines.append(f"  • {name}")
+            lines.append("")
+
+        if chat_type in ("all", "private"):
+            lines.append(f"私聊联系人（{len(privates)}个）：\n")
+            for name in privates[:100]:  # 联系人可能很多，限制显示
+                lines.append(f"  • {name}")
+            if len(privates) > 100:
+                lines.append(f"  ... 还有 {len(privates) - 100} 个联系人")
+
         return "\n".join(lines)
     except Exception as e:
-        return f"获取群聊列表失败: {e}"
+        return f"获取列表失败: {e}"
 
 
 # ══════════════════════════════════════════════════════════
