@@ -47,7 +47,8 @@ def activate_wechat() -> tuple[bool, str]:
 def select_chat(chat_name: str) -> tuple[bool, str]:
     """通过搜索框切换到指定聊天
 
-    使用 Cmd+F 打开搜索，输入名称，回车选择第一个结果。
+    使用 Cmd+F 打开搜索，输入名称，快速回车（在网络搜索结果加载前
+    抢先选中联系人），然后 Escape 关闭搜索面板。
     """
     ok, msg = activate_wechat()
     if not ok:
@@ -71,27 +72,27 @@ def select_chat(chat_name: str) -> tuple[bool, str]:
                 keystroke "a" using command down
                 delay 0.1
                 keystroke "v" using command down
-                delay 1.0
+                delay 0.2
 
-                -- 回车选择第一个搜索结果
+                -- 立刻回车！在网络搜索结果加载之前，联系人还在第一位
                 key code 36
-                delay 0.5
+                delay 0.8
 
-                -- Escape 关闭搜索栏，焦点回到聊天输入框
+                -- Escape 关闭搜索面板
                 key code 53
-                delay 0.3
+                delay 0.5
             end tell
         end tell
         return "ok"
     """
-    return _run_osascript(script, timeout=15)
+    return _run_osascript(script, timeout=20)
 
 
 def send_to_current_chat(text: str) -> tuple[bool, str]:
     """向当前打开的聊天发送消息
 
     假设微信已在前台且已选中目标聊天。
-    通过剪贴板粘贴消息，回车发送。
+    点击右侧聊天面板的输入框区域，粘贴消息并发送。
     """
     # 转义特殊字符
     escaped = text.replace("\\", "\\\\").replace('"', '\\"')
@@ -103,7 +104,18 @@ def send_to_current_chat(text: str) -> tuple[bool, str]:
                 set frontmost to true
                 delay 0.3
 
-                -- 点击输入框区域（Tab 可以聚焦到输入框）
+                -- 获取窗口位置和尺寸
+                set winPos to position of window 1
+                set winSize to size of window 1
+
+                -- 点击右侧聊天面板的输入框（70% 宽度处，底部上方 50px）
+                -- 微信左侧是会话列表/搜索面板，右侧是聊天区域
+                set clickX to (item 1 of winPos) + (item 1 of winSize) * 0.7
+                set clickY to (item 2 of winPos) + (item 2 of winSize) - 50
+
+                click at {{clickX, clickY}}
+                delay 0.3
+
                 -- 粘贴消息
                 keystroke "v" using command down
                 delay 0.3
