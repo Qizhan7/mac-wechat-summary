@@ -76,6 +76,10 @@ def select_chat(chat_name: str) -> tuple[bool, str]:
                 -- 回车选择第一个搜索结果
                 key code 36
                 delay 0.5
+
+                -- Escape 关闭搜索栏，焦点回到聊天输入框
+                key code 53
+                delay 0.3
             end tell
         end tell
         return "ok"
