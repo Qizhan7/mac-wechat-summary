@@ -17,11 +17,9 @@ macOS 菜单栏应用，一键总结微信群聊消息。
 
 ## 原理
 
-1. 从微信进程内存中提取 SQLCipher 数据库解密密钥（C 程序扫描）
-2. 用密钥解密本地微信数据库（AES-256-CBC + HMAC-SHA512）
-3. 读取聊天记录，发送给 AI 生成总结
+读取本地微信聊天记录，调用 AI 接口生成总结。
 
-> 所有操作均在本地完成，数据不经过第三方中转（除 AI API 调用外）。
+> 所有操作均在本地完成，聊天数据不经过第三方中转（仅发送给你选择的 AI 服务）。
 
 ## 安装
 
@@ -54,11 +52,31 @@ macOS 菜单栏应用，一键总结微信群聊消息。
 │   └── dialogs.py      # GUI 对话框
 ├── c_src/
 │   └── find_keys_macos.c # 内存扫描 C 程序
+├── mcp_server.py       # MCP Server（供 Claude 调用）
 ├── 启动.command         # 一键启动脚本
 ├── first_run.sh        # 首次运行环境配置
 ├── setup.py            # 依赖安装脚本
 └── requirements.txt    # Python 依赖
 ```
+
+## MCP Server
+
+支持通过 Claude Desktop 或 Claude Code 直接查询和总结微信消息。
+
+在 Claude Desktop 配置文件中添加（`~/Library/Application Support/Claude/claude_desktop_config.json`）：
+
+```json
+{
+  "mcpServers": {
+    "wechat-summary": {
+      "command": "/项目路径/.venv/bin/python3",
+      "args": ["/项目路径/mcp_server.py"]
+    }
+  }
+}
+```
+
+配置后可在 Claude 对话中查询群聊列表、读取聊天记录、总结消息和搜索关键词。
 
 ## 致谢
 
