@@ -12,6 +12,7 @@ PYTHON_BIN="$VENV_DIR/bin/python"
 REQ_FILE="$PROJECT_DIR/requirements.txt"
 REQ_STAMP="$VENV_DIR/.requirements.sha256"
 USER_DATA_DIR="$HOME/.wechat-summary"
+PYTHON3_CMD="python3"
 SETUP_ONLY=0
 
 if [[ "${1:-}" == "--setup-only" ]]; then
@@ -54,6 +55,31 @@ ensure_python() {
     local min_major=3
     local min_minor=10
 
+    # 尝试找到可用的 python3 路径（优先用满足版本要求的）
+    _find_suitable_python() {
+        # 候选路径：Homebrew 常见位置 + 系统默认
+        local candidates=(
+            "/opt/homebrew/bin/python3.12"
+            "/opt/homebrew/bin/python3.11"
+            "/opt/homebrew/bin/python3.10"
+            "/usr/local/bin/python3.12"
+            "/usr/local/bin/python3.11"
+            "/usr/local/bin/python3.10"
+            "python3"
+        )
+        for candidate in "${candidates[@]}"; do
+            local ver=""
+            ver="$($candidate -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)" || continue
+            local maj="${ver%%.*}"
+            local min="${ver##*.}"
+            if [[ "$maj" -ge "$min_major" ]] && [[ "$min" -ge "$min_minor" ]]; then
+                echo "$candidate"
+                return 0
+            fi
+        done
+        return 1
+    }
+
     if ! command -v python3 &>/dev/null; then
         echo "❌ 未找到 Python3，请先安装："
         echo ""
@@ -64,32 +90,47 @@ ensure_python() {
         pause_and_exit 1
     fi
 
+    # 先看当前 python3 是否满足要求
     local py_version=""
     py_version="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)"
     local py_major="${py_version%%.*}"
     local py_minor="${py_version##*.}"
 
     if [[ "$py_major" -lt "$min_major" ]] || { [[ "$py_major" -eq "$min_major" ]] && [[ "$py_minor" -lt "$min_minor" ]]; }; then
-        echo "❌ Python 版本太低：当前是 $py_version，需要 ${min_major}.${min_minor} 以上"
-        echo ""
+        echo "⚠️  默认 Python 版本较低（${py_version}），正在查找更高版本..."
 
-        # 如果有 Homebrew，尝试自动安装
-        if command -v brew &>/dev/null; then
-            echo "  检测到 Homebrew，正在自动安装 Python 3.12..."
-            if brew install python@3.12; then
-                echo "  ✓ Python 3.12 安装成功，请重新双击「启动.command」"
-                pause_and_exit 0
-            fi
-            echo "  自动安装失败，请手动安装"
-            echo ""
+        # 先在已有路径中查找合适的版本
+        local suitable=""
+        suitable="$(_find_suitable_python)" || true
+
+        # 没找到且有 Homebrew，尝试自动安装
+        if [[ -z "$suitable" ]] && command -v brew &>/dev/null; then
+            echo "  检测到 Homebrew，正在安装 Python 3.12..."
+            brew install python@3.12 2>&1 | tail -3
+            suitable="$(_find_suitable_python)" || true
         fi
 
+        if [[ -n "$suitable" ]]; then
+            local found_ver=""
+            found_ver="$($suitable -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)"
+            echo "  ✓ 找到 Python ${found_ver}：${suitable}"
+            # 创建别名让后续脚本用这个版本
+            python3() { "$suitable" "$@"; }
+            export -f python3 2>/dev/null || true
+            PYTHON3_CMD="$suitable"
+            return 0
+        fi
+
+        echo ""
+        echo "❌ 未找到 Python ${min_major}.${min_minor} 以上版本"
+        echo ""
         echo "   方法一（推荐）：去 https://www.python.org/downloads/ 下载最新版本"
         echo "   方法二：运行 brew install python@3.12（需先安装 Homebrew）"
         echo ""
         echo "   安装完成后重新双击「启动.command」"
         pause_and_exit 1
     fi
+    PYTHON3_CMD="python3"
 }
 
 ensure_venv() {
@@ -97,7 +138,7 @@ ensure_venv() {
 
     if [[ ! -x "$PYTHON_BIN" ]]; then
         echo "[1/3] 创建项目隔离环境..."
-        python3 -m venv "$VENV_DIR"
+        "$PYTHON3_CMD" -m venv "$VENV_DIR"
     fi
 
     local current_hash=""
