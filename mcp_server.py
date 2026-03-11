@@ -251,9 +251,10 @@ def get_chat_images(
     hours: int = 0,
     full_size: bool = False,
 ) -> list:
-    """获取聊天中的图片，返回图片内容供 AI 查看和理解。
+    """获取聊天中的图片和表情包，返回图片内容供 AI 查看和理解。
 
-    读取本地微信图片文件，以 base64 编码返回，AI 可以直接"看到"图片内容。
+    同时支持普通图片（type=3）和表情包/动图（type=47）。
+    读取本地文件或从 CDN 下载表情包，以 base64 编码返回。
     默认返回缩略图（较小较快），使用 full_size=True 获取原图。
 
     Args:
@@ -275,46 +276,97 @@ def get_chat_images(
         if hours > 0:
             since_ts = time.time() - hours * 3600
 
-        image_msgs = db.get_image_messages(username, since_ts=since_ts, limit=limit)
-        if not image_msgs:
+        # 同时获取普通图片和表情包
+        image_msgs = db.get_image_messages(
+            username, since_ts=since_ts, limit=limit
+        )
+        emoji_msgs = db.get_emoji_messages(
+            username, since_ts=since_ts, limit=limit
+        )
+
+        # 合并并按时间排序，取 limit 条
+        all_msgs = image_msgs + emoji_msgs
+        all_msgs.sort(key=lambda m: m["timestamp"])
+        if since_ts > 0:
+            all_msgs = all_msgs[:limit]
+        else:
+            all_msgs = all_msgs[-limit:]
+
+        if not all_msgs:
             return [TextContent(
                 type="text",
-                text=f"{display}: 没有{'最近 ' + str(hours) + ' 小时内的' if hours else ''}图片消息",
+                text=(
+                    f"{display}: 没有"
+                    f"{'最近 ' + str(hours) + ' 小时内的' if hours else ''}"
+                    f"图片或表情包消息"
+                ),
             )]
 
+        img_count = sum(1 for m in all_msgs if m.get("msg_type") != "emoji")
+        emoji_count = sum(1 for m in all_msgs if m.get("msg_type") == "emoji")
+        header_parts = []
+        if img_count:
+            header_parts.append(f"{img_count} 张图片")
+        if emoji_count:
+            header_parts.append(f"{emoji_count} 个表情包")
         results = [TextContent(
             type="text",
-            text=f"📷 {display} — {len(image_msgs)} 张图片\n",
+            text=f"📷 {display} — {'、'.join(header_parts)}\n",
         )]
 
+        MAX_TOTAL_BYTES = 3 * 1024 * 1024  # 3MB 总图片数据上限
         found_count = 0
-        for msg in image_msgs:
-            if full_size:
-                file_path = msg.get("image_path") or msg.get("thumb_path")
-            else:
-                file_path = msg.get("thumb_path") or msg.get("image_path")
+        total_bytes = 0
+        skipped_v2 = 0
+        skipped_size = False
+        for msg in all_msgs:
+            sender_info = f"{msg['sender']}发送" if msg.get("sender") else "发送"
+            is_emoji = msg.get("msg_type") == "emoji"
+            type_label = "表情包" if is_emoji else "图片"
 
-            sender_info = f"{msg['sender']}发送" if msg["sender"] else "发送"
             results.append(TextContent(
                 type="text",
-                text=f"[{msg['time_str']}] {sender_info}的图片：",
+                text=f"[{msg['time_str']}] {sender_info}的{type_label}：",
             ))
 
-            if not file_path or not os.path.isfile(file_path):
-                results.append(TextContent(
-                    type="text",
-                    text="  (图片文件未找到，可能已被清理)",
-                ))
-                continue
+            if is_emoji:
+                # 表情包：从 CDN 下载
+                image_data = _download_emoji(msg)
+                if image_data is None:
+                    results.append(TextContent(
+                        type="text",
+                        text="  (表情包下载失败，CDN 链接可能已过期)",
+                    ))
+                    continue
+            else:
+                # 普通图片：读取本地文件
+                if full_size:
+                    file_path = msg.get("image_path") or msg.get("thumb_path")
+                else:
+                    file_path = msg.get("thumb_path") or msg.get("image_path")
 
-            try:
-                with open(file_path, "rb") as f:
-                    image_data = f.read()
+                if not file_path or not os.path.isfile(file_path):
+                    results.append(TextContent(
+                        type="text",
+                        text="  (图片文件未找到，可能已被清理)",
+                    ))
+                    continue
+
+                try:
+                    with open(file_path, "rb") as f:
+                        image_data = f.read()
+                except OSError as e:
+                    results.append(TextContent(
+                        type="text",
+                        text=f"  (读取失败: {e})",
+                    ))
+                    continue
 
                 # V2 加密格式 (WeChat 2026+) — 尝试解密
                 if image_data[:6] == b"\x07\x08\x56\x32\x08\x07":
                     from core.wechat_db import WeChatDB
                     from core.config import load_config
+
                     aes_key = load_config().get("image_aes_key", "")
                     if aes_key:
                         decoded = WeChatDB.decode_image_v2(image_data, aes_key)
@@ -329,59 +381,106 @@ def get_chat_images(
                     else:
                         results.append(TextContent(
                             type="text",
-                            text="  (V2 加密图片，需要提取图片密钥后才能查看)",
+                            text="  (V2 加密图片，需要提取密钥后才能查看)",
                         ))
+                        skipped_v2 += 1
                         continue
 
-                # 检测 MIME 类型
-                if image_data[:2] == b"\xff\xd8":
-                    mime_type = "image/jpeg"
-                elif image_data[:4] == b"\x89PNG":
-                    mime_type = "image/png"
-                elif image_data[:4] == b"GIF8":
-                    mime_type = "image/gif"
-                elif image_data[:4] == b"RIFF" and len(image_data) > 12 and image_data[8:12] == b"WEBP":
-                    mime_type = "image/webp"
-                else:
-                    results.append(TextContent(
-                        type="text",
-                        text="  (不支持的图片格式)",
-                    ))
-                    continue
-
-                if len(image_data) > 5 * 1024 * 1024:
-                    size_mb = len(image_data) / (1024 * 1024)
-                    results.append(TextContent(
-                        type="text",
-                        text=f"  (图片太大: {size_mb:.1f}MB，跳过)",
-                    ))
-                    continue
-
-                b64_data = base64.b64encode(image_data).decode()
-                results.append(ImageContent(
-                    type="image",
-                    data=b64_data,
-                    mimeType=mime_type,
-                ))
-                found_count += 1
-
-            except OSError as e:
+            # 检测 MIME 类型
+            mime_type = _detect_mime(image_data)
+            if not mime_type:
                 results.append(TextContent(
                     type="text",
-                    text=f"  (读取失败: {e})",
+                    text="  (不支持的图片格式)",
                 ))
+                continue
 
-        summary = f"\n共找到 {found_count}/{len(image_msgs)} 张图片文件"
-        if found_count < len(image_msgs):
-            from core.config import load_config
-            if not load_config().get("image_aes_key"):
-                summary += "\n💡 部分图片为 V2 加密格式，需要提取密钥才能查看"
+            if len(image_data) > 5 * 1024 * 1024:
+                size_mb = len(image_data) / (1024 * 1024)
+                results.append(TextContent(
+                    type="text",
+                    text=f"  (图片太大: {size_mb:.1f}MB，跳过)",
+                ))
+                continue
+
+            if total_bytes + len(image_data) > MAX_TOTAL_BYTES:
+                results.append(TextContent(
+                    type="text",
+                    text="  (已达到总数据量上限，跳过剩余图片)",
+                ))
+                skipped_size = True
+                break
+
+            b64_data = base64.b64encode(image_data).decode()
+            results.append(ImageContent(
+                type="image",
+                data=b64_data,
+                mimeType=mime_type,
+            ))
+            found_count += 1
+            total_bytes += len(image_data)
+
+        summary = f"\n共获取 {found_count}/{len(all_msgs)} 张图片/表情包"
+        if skipped_size:
+            summary += "\n📦 因数据量上限跳过了部分图片，可减少 limit 值"
+        if skipped_v2 > 0:
+            summary += "\n💡 部分图片为 V2 加密格式，需要提取密钥才能查看"
         results.append(TextContent(type="text", text=summary))
         return results
 
     except Exception as e:
         from mcp.types import TextContent
+
         return [TextContent(type="text", text=f"获取图片失败: {e}")]
+
+
+def _detect_mime(data: bytes) -> str | None:
+    """检测图片数据的 MIME 类型"""
+    if not data or len(data) < 4:
+        return None
+    if data[:2] == b"\xff\xd8":
+        return "image/jpeg"
+    if data[:4] == b"\x89PNG":
+        return "image/png"
+    if data[:4] == b"GIF8":
+        return "image/gif"
+    if data[:4] == b"RIFF" and len(data) > 12 and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _download_emoji(msg: dict, timeout: int = 10) -> bytes | None:
+    """从 CDN 下载表情包图片
+
+    Args:
+        msg: 表情包消息字典，需包含 cdnurl
+        timeout: 下载超时秒数
+
+    Returns:
+        bytes | None: 图片数据，失败返回 None
+    """
+    import urllib.request
+
+    cdnurl = msg.get("cdnurl", "")
+    if not cdnurl:
+        return None
+
+    try:
+        req = urllib.request.Request(
+            cdnurl,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        # 限制最大读取 2MB
+        data = resp.read(2 * 1024 * 1024)
+
+        # 验证是否为有效图片
+        if _detect_mime(data):
+            return data
+
+        return None
+    except Exception:
+        return None
 
 
 @mcp.tool()

@@ -1159,6 +1159,120 @@ class WeChatDB:
 
         return messages
 
+    def get_emoji_messages(self, username, since_ts=0, limit=10):
+        """获取聊天中的表情包/动图消息
+
+        查询 local_type=47 的消息，解析 XML 提取 cdnurl、md5 等信息。
+
+        Returns:
+            list[dict]: 每条包含 sender, time_str, timestamp,
+                        md5, cdnurl, aeskey, width, height
+        """
+        import re
+
+        self._load_contacts()
+        is_group = "@chatroom" in username
+
+        db_path, table_name = self._find_msg_table(username)
+        if not db_path:
+            return []
+
+        conn = sqlite3.connect(db_path)
+        try:
+            if since_ts > 0:
+                rows = conn.execute(f"""
+                    SELECT local_type, create_time, message_content,
+                           WCDB_CT_message_content, status
+                    FROM [{table_name}]
+                    WHERE local_type = 47 AND create_time > ?
+                    ORDER BY create_time ASC
+                    LIMIT ?
+                """, (since_ts, limit)).fetchall()
+            else:
+                rows = conn.execute(f"""
+                    SELECT local_type, create_time, message_content,
+                           WCDB_CT_message_content, status
+                    FROM [{table_name}]
+                    WHERE local_type = 47
+                    ORDER BY create_time DESC
+                    LIMIT ?
+                """, (limit,)).fetchall()
+                rows = list(reversed(rows))
+        except Exception:
+            return []
+        finally:
+            conn.close()
+
+        contact_name = ""
+        if not is_group:
+            contact_name = self._contacts.get(username, username)
+
+        messages = []
+        for local_type, create_time, content, ct, status in rows:
+            # 解压内容
+            if ct and ct == 4 and isinstance(content, bytes):
+                try:
+                    content = _zstd_dctx.decompress(content).decode(
+                        "utf-8", errors="replace"
+                    )
+                except Exception:
+                    content = ""
+            elif isinstance(content, bytes):
+                try:
+                    content = content.decode("utf-8", errors="replace")
+                except Exception:
+                    content = ""
+
+            if not content:
+                continue
+
+            # 解析 emoji XML
+            md5_match = re.search(r'md5\s*=\s*"([a-fA-F0-9]{32})"', content)
+            cdn_match = re.search(r'cdnurl\s*=\s*"([^"]+)"', content)
+            aes_match = re.search(r'aeskey\s*=\s*"([^"]*)"', content)
+            w_match = re.search(r'width\s*=\s*"(\d+)"', content)
+            h_match = re.search(r'height\s*=\s*"(\d+)"', content)
+            from_match = re.search(
+                r'fromusername\s*=\s*"([^"]+)"', content
+            )
+
+            if not md5_match:
+                continue
+
+            emoji_md5 = md5_match.group(1)
+            cdnurl = cdn_match.group(1).replace("&amp;", "&") if cdn_match else ""
+            aeskey = aes_match.group(1) if aes_match else ""
+            width = int(w_match.group(1)) if w_match else 0
+            height = int(h_match.group(1)) if h_match else 0
+
+            # 提取发送者
+            sender = ""
+            if is_group:
+                # 群聊表情包 XML 中 fromusername 是发送者
+                if from_match:
+                    raw_id = from_match.group(1)
+                    sender = self._contacts.get(raw_id)
+                    if not sender:
+                        sender = self._nick_to_remark.get(raw_id, raw_id)
+            else:
+                sender = "我" if status == 2 else contact_name
+
+            messages.append({
+                "sender": sender,
+                "timestamp": create_time,
+                "time_str": datetime.fromtimestamp(create_time).strftime(
+                    "%m-%d %H:%M"
+                ),
+                "md5": emoji_md5,
+                "cdnurl": cdnurl,
+                "aeskey": aeskey,
+                "width": width,
+                "height": height,
+                "msg_type": "emoji",
+            })
+
+        return messages
+
     def format_messages_for_ai(self, messages, show_group_nickname=False):
         """将消息列表格式化为适合 AI 总结的文本
 
