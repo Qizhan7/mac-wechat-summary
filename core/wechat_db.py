@@ -102,6 +102,7 @@ class WeChatDB:
         self._db_cache = {}  # rel_key -> (db_mtime, wal_mtime, cache_path)
         self._contacts = None  # {username: display_name}
         self._contacts_full = None  # [{username, nick_name, remark}]
+        self._nick_to_remark = {}  # {nick_name: remark} 昵称→备注反向映射
         os.makedirs(self.CACHE_DIR, exist_ok=True)
 
     def invalidate_cache(self):
@@ -109,6 +110,7 @@ class WeChatDB:
         self._db_cache.clear()
         self._contacts = None
         self._contacts_full = None
+        self._nick_to_remark = {}
 
     def _get_key(self, rel_path):
         """获取数据库密钥"""
@@ -182,10 +184,12 @@ class WeChatDB:
         if not path:
             self._contacts = {}
             self._contacts_full = []
+            self._nick_to_remark = {}
             return
 
         names = {}
         full = []
+        nick_to_remark = {}  # 昵称 → 备注名（反向映射，用于群消息中按昵称查备注）
         conn = sqlite3.connect(path)
         try:
             for r in conn.execute("SELECT username, nick_name, remark FROM contact"):
@@ -193,6 +197,9 @@ class WeChatDB:
                 display = remark if remark else nick if nick else uname
                 names[uname] = display
                 full.append({"username": uname, "nick_name": nick or "", "remark": remark or ""})
+                # 如果有备注名，建立 昵称→备注 的反向映射
+                if remark and nick:
+                    nick_to_remark[nick] = remark
         except Exception:
             pass
         finally:
@@ -200,6 +207,7 @@ class WeChatDB:
 
         self._contacts = names
         self._contacts_full = full
+        self._nick_to_remark = nick_to_remark
 
     def get_groups(self):
         """获取所有群聊列表
@@ -424,17 +432,21 @@ class WeChatDB:
                 continue
 
             sender = ""
+            raw_sender_id = ""
             text = content
             if is_group and ":\n" in content:
-                sender, text = content.split(":\n", 1)
-                sender = self._contacts.get(sender, sender)
+                raw_sender_id, text = content.split(":\n", 1)
+                # 优先按 wxid 查（备注 > 昵称）；查不到时按昵称反查备注
+                sender = self._contacts.get(raw_sender_id)
+                if not sender:
+                    sender = self._nick_to_remark.get(raw_sender_id, raw_sender_id)
             elif not is_group:
                 # 私聊：status=2 是自己发的，status=3 是对方发的
                 sender = "我" if status == 2 else contact_name
 
             # 群聊中自己发的消息没有 wxid:\n 前缀，sender 会是空的
-            if is_group and not sender and status == 2:
-                sender = "我"
+            if is_group and not sender:
+                sender = "您"
 
             # 清理 XML 特殊消息
             cleaned = _clean_msg_text(text)
@@ -444,6 +456,7 @@ class WeChatDB:
 
             messages.append({
                 "sender": sender,
+                "raw_sender_id": raw_sender_id,
                 "text": text,
                 "timestamp": create_time,
                 "time_str": datetime.fromtimestamp(create_time).strftime("%m-%d %H:%M"),
@@ -807,14 +820,25 @@ class WeChatDB:
                 return uname
         return None
 
-    def format_messages_for_ai(self, messages):
-        """将消息列表格式化为适合 AI 总结的文本"""
+    def format_messages_for_ai(self, messages, show_group_nickname=False):
+        """将消息列表格式化为适合 AI 总结的文本
+
+        Args:
+            messages: 消息列表
+            show_group_nickname: 是否显示群昵称（原始 sender ID + 已知名字）
+        """
         lines = []
         for msg in messages:
             if msg["type"] in (10000, 10002):
                 continue  # 跳过系统消息和撤回
-            if msg["sender"]:
-                lines.append(f"[{msg['time_str']}] {msg['sender']}: {msg['text']}")
+            sender = msg.get("sender", "")
+            if sender and show_group_nickname:
+                raw_id = msg.get("raw_sender_id", "")
+                # 如果有原始 ID 且与显示名不同，附上原始 ID 帮助识别
+                if raw_id and raw_id != sender:
+                    sender = f"{sender}({raw_id})"
+            if sender:
+                lines.append(f"[{msg['time_str']}] {sender}: {msg['text']}")
             else:
                 lines.append(f"[{msg['time_str']}] {msg['text']}")
         return "\n".join(lines)

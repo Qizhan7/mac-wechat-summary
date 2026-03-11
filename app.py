@@ -14,7 +14,7 @@ import rumps
 
 # --- 用于弹窗置顶 + 自定义对话框 ---
 try:
-    from AppKit import NSApplication, NSAlert, NSTextField, NSView, NSObject, NSButton
+    from AppKit import NSApplication, NSAlert, NSTextField, NSView, NSObject, NSButton, NSImage
     import objc
     _HAS_APPKIT = True
 except ImportError:
@@ -35,7 +35,13 @@ if _HAS_APPKIT:
 
         def menuWillOpen_(self, menu):
             app = self.app_ref
-            if (app and app.config.get("auto_refresh_on_open")
+            if not app:
+                return
+            # 点击菜单时，如果处于完成/错误状态且不在总结中，恢复正常图标
+            if (not app._summarizing
+                    and getattr(app, '_current_status', None) in (ICON_DONE, ICON_ERROR)):
+                app._set_status(ICON_NORMAL)
+            if (app.config.get("auto_refresh_on_open")
                     and app.db and not app._summarizing):
                 now = time.time()
                 if now - self._last_refresh > 5:  # 至少间隔 5 秒
@@ -78,6 +84,10 @@ AI_PROVIDERS = [
 # 菜单栏图标：优先使用 PNG 图片（更可靠），emoji 作为 fallback
 _ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources")
 ICON_PNG = os.path.join(_ICON_DIR, "icon.png")
+ICON_LOADING_PNG = os.path.join(_ICON_DIR, "icon_loading.png")
+ICON_DONE_PNG = os.path.join(_ICON_DIR, "icon_done.png")
+ICON_ERROR_PNG = os.path.join(_ICON_DIR, "icon_error.png")
+APP_ICON_PNG = os.path.join(_ICON_DIR, "app_icon.png")
 _USE_PNG_ICON = os.path.isfile(ICON_PNG)
 
 # emoji 后加一个空格，强制 macOS 分配稳定宽度，防止裁切
@@ -85,6 +95,14 @@ ICON_NORMAL = "💬 "
 ICON_LOADING = "⏳ "
 ICON_DONE = "✅ "
 ICON_ERROR = "❌ "
+
+# PNG 图标状态映射
+_ICON_PNG_MAP = {
+    ICON_NORMAL: ICON_PNG,
+    ICON_LOADING: ICON_LOADING_PNG,
+    ICON_DONE: ICON_DONE_PNG,
+    ICON_ERROR: ICON_ERROR_PNG,
+}
 
 
 def _notify(title, subtitle, message):
@@ -106,11 +124,20 @@ class WeChatSummaryApp(rumps.App):
             self.title = None  # 仅显示图标，不显示文字
         else:
             super().__init__("微信总结", title=ICON_NORMAL, quit_button="退出")
+        # 设置应用图标（替换弹窗和 Dock 中的 Python 火箭图标）
+        if _HAS_APPKIT and os.path.isfile(APP_ICON_PNG):
+            try:
+                ns_icon = NSImage.alloc().initWithContentsOfFile_(APP_ICON_PNG)
+                if ns_icon:
+                    NSApplication.sharedApplication().setApplicationIconImage_(ns_icon)
+            except Exception:
+                pass
         self.config = load_config()
         self.db = None
         self.ai = None
         self._summarizing = False
         self._last_summary = None
+        self._current_status = ICON_NORMAL
 
         # 构建菜单
         self.menu = [
@@ -146,15 +173,18 @@ class WeChatSummaryApp(rumps.App):
     # ── 安全设置菜单栏标题 ───────────────────────────────
 
     def _set_status(self, new_title):
-        """安全设置菜单栏标题，先清空再设置以强制 macOS 重新布局"""
+        """安全设置菜单栏状态图标"""
         try:
             if _USE_PNG_ICON:
-                # 有图标时：正常状态只显示图标，其他状态在图标旁显示 emoji
-                self.title = None if new_title == ICON_NORMAL else new_title
+                # 切换 PNG 图标，不显示文字
+                png_path = _ICON_PNG_MAP.get(new_title, ICON_PNG)
+                self.icon = png_path
+                self.title = None
             else:
                 self.title = " "       # 先设一个占位空格
                 time.sleep(0.05)       # 给 macOS 一点时间释放旧宽度
                 self.title = new_title # 再设新的 emoji
+            self._current_status = new_title
         except Exception:
             self.title = new_title
 
@@ -211,6 +241,14 @@ class WeChatSummaryApp(rumps.App):
             callback=self._toggle_auto_refresh,
         ))
 
+        # 显示群昵称开关
+        show_nickname = self.config.get("show_group_nickname", True)
+        nick_prefix = "✅ " if show_nickname else "      "
+        settings.add(rumps.MenuItem(
+            f"{nick_prefix}总结中显示群昵称",
+            callback=self._toggle_group_nickname,
+        ))
+
         return settings
 
     def _rebuild_settings_menu(self):
@@ -226,6 +264,15 @@ class WeChatSummaryApp(rumps.App):
         save_config(self.config)
         state = "开启" if not current else "关闭"
         _notify("微信总结", "设置已更新", f"自动刷新已{state}")
+        self._rebuild_settings_menu()
+
+    def _toggle_group_nickname(self, _):
+        """切换「总结中显示群昵称」"""
+        current = self.config.get("show_group_nickname", True)
+        self.config["show_group_nickname"] = not current
+        save_config(self.config)
+        state = "开启" if not current else "关闭"
+        _notify("微信总结", "设置已更新", f"总结中显示群昵称已{state}")
         self._rebuild_settings_menu()
 
     def _make_provider_callback(self, provider_key):
@@ -580,6 +627,11 @@ class WeChatSummaryApp(rumps.App):
             alert.setInformativeText_(
                 f"群聊：{group_name}\n以下两项填一项即可（不要都填）"
             )
+            # 设置弹窗图标
+            if os.path.isfile(APP_ICON_PNG):
+                _icon = NSImage.alloc().initWithContentsOfFile_(APP_ICON_PNG)
+                if _icon:
+                    alert.setIcon_(_icon)
             alert.addButtonWithTitle_("开始总结")
             alert.addButtonWithTitle_("取消")
 
@@ -686,7 +738,7 @@ class WeChatSummaryApp(rumps.App):
                 _notify("微信总结", group_name, "没有新消息")
                 return
 
-            messages_text = self.db.format_messages_for_ai(messages)
+            messages_text = self.db.format_messages_for_ai(messages, show_group_nickname=self.config.get("show_group_nickname", True))
             start_time = messages[0]["time_str"]
             end_time = messages[-1]["time_str"]
             msg_count = len(messages)
@@ -1080,7 +1132,7 @@ class WeChatSummaryApp(rumps.App):
                 messages = self.db.get_messages(username, since_ts=since_ts, limit=500)
 
                 if messages:
-                    messages_text = self.db.format_messages_for_ai(messages)
+                    messages_text = self.db.format_messages_for_ai(messages, show_group_nickname=self.config.get("show_group_nickname", True))
                     start_time = messages[0]["time_str"]
                     end_time = messages[-1]["time_str"]
                     msg_count = len(messages)
@@ -1209,6 +1261,10 @@ class WeChatSummaryApp(rumps.App):
 
             # ── PyObjC 多输入框对话框 ──
             alert = NSAlert.alloc().init()
+            if os.path.isfile(APP_ICON_PNG):
+                _icon = NSImage.alloc().initWithContentsOfFile_(APP_ICON_PNG)
+                if _icon:
+                    alert.setIcon_(_icon)
             alert.setMessageText_("🔍 关键词搜索")
 
             # 构建群聊列表文字
