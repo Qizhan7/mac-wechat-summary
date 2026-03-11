@@ -51,14 +51,45 @@ ensure_xcode_cli() {
 }
 
 ensure_python() {
-    if command -v python3 &>/dev/null; then
-        return 0
+    local min_major=3
+    local min_minor=10
+
+    if ! command -v python3 &>/dev/null; then
+        echo "❌ 未找到 Python3，请先安装："
+        echo ""
+        echo "   方法一（推荐）：去 https://www.python.org/downloads/ 下载最新版本"
+        echo "   方法二：如果已装 Homebrew，运行: brew install python@3.12"
+        echo ""
+        echo "   安装完成后重新双击「启动.command」"
+        pause_and_exit 1
     fi
 
-    echo "❌ 未找到 Python3，请先安装："
-    echo "   1. 去 python.org 下载 Python 3.9 以上版本"
-    echo "   2. 安装完成后重新双击「启动.command」"
-    pause_and_exit 1
+    local py_version=""
+    py_version="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)"
+    local py_major="${py_version%%.*}"
+    local py_minor="${py_version##*.}"
+
+    if [[ "$py_major" -lt "$min_major" ]] || { [[ "$py_major" -eq "$min_major" ]] && [[ "$py_minor" -lt "$min_minor" ]]; }; then
+        echo "❌ Python 版本太低：当前是 $py_version，需要 ${min_major}.${min_minor} 以上"
+        echo ""
+
+        # 如果有 Homebrew，尝试自动安装
+        if command -v brew &>/dev/null; then
+            echo "  检测到 Homebrew，正在自动安装 Python 3.12..."
+            if brew install python@3.12; then
+                echo "  ✓ Python 3.12 安装成功，请重新双击「启动.command」"
+                pause_and_exit 0
+            fi
+            echo "  自动安装失败，请手动安装"
+            echo ""
+        fi
+
+        echo "   方法一（推荐）：去 https://www.python.org/downloads/ 下载最新版本"
+        echo "   方法二：运行 brew install python@3.12（需先安装 Homebrew）"
+        echo ""
+        echo "   安装完成后重新双击「启动.command」"
+        pause_and_exit 1
+    fi
 }
 
 ensure_venv() {
