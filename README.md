@@ -34,7 +34,7 @@ macOS 菜单栏应用，一键总结微信群聊消息。
 
 1. 下载或 clone 本项目
 2. 双击 `启动.command`，首次运行会自动安装依赖
-3. 菜单栏出现 💬 图标后，点击设置 API Key
+3. 菜单栏出现 <img src="resources/icon.png" width="16" height="16"> 图标后，点击设置 API Key
 4. 选择群聊 → 总结新消息
 
 详细说明见 [使用说明.txt](使用说明.txt) 和 [功能说明.txt](功能说明.txt)。
