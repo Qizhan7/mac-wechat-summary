@@ -245,6 +245,146 @@ def read_messages(chat_name: str, limit: int = 100, hours: int = 0) -> str:
 
 
 @mcp.tool()
+def get_chat_images(
+    chat_name: str,
+    limit: int = 5,
+    hours: int = 0,
+    full_size: bool = False,
+) -> list:
+    """获取聊天中的图片，返回图片内容供 AI 查看和理解。
+
+    读取本地微信图片文件，以 base64 编码返回，AI 可以直接"看到"图片内容。
+    默认返回缩略图（较小较快），使用 full_size=True 获取原图。
+
+    Args:
+        chat_name: 群聊名称或聊天对象名字，支持模糊匹配
+        limit: 最多返回几张图片，默认 5（最大 10）
+        hours: 只读取最近 N 小时的图片（0 表示不限时间，读取最近的图片）
+        full_size: 是否返回原图而非缩略图，默认 False
+    """
+    import base64
+    from mcp.types import ImageContent, TextContent
+
+    try:
+        username, display = _resolve(chat_name)
+        db = _get_db()
+
+        limit = min(limit, 10)
+
+        since_ts = 0
+        if hours > 0:
+            since_ts = time.time() - hours * 3600
+
+        image_msgs = db.get_image_messages(username, since_ts=since_ts, limit=limit)
+        if not image_msgs:
+            return [TextContent(
+                type="text",
+                text=f"{display}: 没有{'最近 ' + str(hours) + ' 小时内的' if hours else ''}图片消息",
+            )]
+
+        results = [TextContent(
+            type="text",
+            text=f"📷 {display} — {len(image_msgs)} 张图片\n",
+        )]
+
+        found_count = 0
+        for msg in image_msgs:
+            if full_size:
+                file_path = msg.get("image_path") or msg.get("thumb_path")
+            else:
+                file_path = msg.get("thumb_path") or msg.get("image_path")
+
+            sender_info = f"{msg['sender']}发送" if msg["sender"] else "发送"
+            results.append(TextContent(
+                type="text",
+                text=f"[{msg['time_str']}] {sender_info}的图片：",
+            ))
+
+            if not file_path or not os.path.isfile(file_path):
+                results.append(TextContent(
+                    type="text",
+                    text="  (图片文件未找到，可能已被清理)",
+                ))
+                continue
+
+            try:
+                with open(file_path, "rb") as f:
+                    image_data = f.read()
+
+                # V2 加密格式 (WeChat 2026+) — 尝试解密
+                if image_data[:6] == b"\x07\x08\x56\x32\x08\x07":
+                    from core.wechat_db import WeChatDB
+                    from core.config import load_config
+                    aes_key = load_config().get("image_aes_key", "")
+                    if aes_key:
+                        decoded = WeChatDB.decode_image_v2(image_data, aes_key)
+                        if decoded:
+                            image_data = decoded
+                        else:
+                            results.append(TextContent(
+                                type="text",
+                                text="  (V2 解密失败，密钥可能已过期)",
+                            ))
+                            continue
+                    else:
+                        results.append(TextContent(
+                            type="text",
+                            text="  (V2 加密图片，需要提取图片密钥后才能查看)",
+                        ))
+                        continue
+
+                # 检测 MIME 类型
+                if image_data[:2] == b"\xff\xd8":
+                    mime_type = "image/jpeg"
+                elif image_data[:4] == b"\x89PNG":
+                    mime_type = "image/png"
+                elif image_data[:4] == b"GIF8":
+                    mime_type = "image/gif"
+                elif image_data[:4] == b"RIFF" and len(image_data) > 12 and image_data[8:12] == b"WEBP":
+                    mime_type = "image/webp"
+                else:
+                    results.append(TextContent(
+                        type="text",
+                        text="  (不支持的图片格式)",
+                    ))
+                    continue
+
+                if len(image_data) > 5 * 1024 * 1024:
+                    size_mb = len(image_data) / (1024 * 1024)
+                    results.append(TextContent(
+                        type="text",
+                        text=f"  (图片太大: {size_mb:.1f}MB，跳过)",
+                    ))
+                    continue
+
+                b64_data = base64.b64encode(image_data).decode()
+                results.append(ImageContent(
+                    type="image",
+                    data=b64_data,
+                    mimeType=mime_type,
+                ))
+                found_count += 1
+
+            except OSError as e:
+                results.append(TextContent(
+                    type="text",
+                    text=f"  (读取失败: {e})",
+                ))
+
+        summary = f"\n共找到 {found_count}/{len(image_msgs)} 张图片文件"
+        if found_count < len(image_msgs):
+            from core.config import load_config
+            if not load_config().get("image_aes_key"):
+                summary += "\n💡 部分图片为 V2 加密格式，需要提取密钥才能查看"
+        results.append(TextContent(type="text", text=summary))
+        return results
+
+    except Exception as e:
+        from mcp.types import TextContent
+        return [TextContent(type="text", text=f"获取图片失败: {e}")]
+
+
+@mcp.tool()
 def search_messages(keywords: str, chat_names: str = "", days: int = 30) -> str:
     """跨群搜索微信消息。支持多关键词（空格分隔，AND 逻辑）。
 
