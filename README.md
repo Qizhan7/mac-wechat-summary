@@ -13,7 +13,7 @@ macOS 菜单栏应用，一键总结微信群聊消息。
 - **关键词搜索** — 按关键词 + 日期范围搜索聊天记录，可选 AI 归纳
 - **总结历史** — 查看、复制往期总结
 - **多 AI 服务** — 支持通义千问、DeepSeek、Ollama、Claude、OpenAI
-- **MCP Server** — 支持通过 Claude Desktop / Claude Code 直接查询和总结微信消息
+- **MCP Server** — 支持通过 AI Agent（Claude Desktop、Cursor 等）直接查询和总结微信消息
 
 ## 原理
 
@@ -61,9 +61,9 @@ macOS 菜单栏应用，一键总结微信群聊消息。
 
 ## MCP Server
 
-支持通过 Claude Desktop 或 Claude Code 直接查询和总结微信消息。
+支持通过任何兼容 MCP 协议的 AI Agent 直接查询和总结微信消息。
 
-在 Claude Desktop 配置文件中添加（`~/Library/Application Support/Claude/claude_desktop_config.json`）：
+以 Claude Desktop 为例，在配置文件中添加（`~/Library/Application Support/Claude/claude_desktop_config.json`）：
 
 ```json
 {
