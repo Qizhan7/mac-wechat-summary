@@ -470,6 +470,63 @@ class WeChatSummaryApp(rumps.App):
             except Exception:
                 pass
 
+    def _input_dialog(self, title, message, default_text="",
+                      ok="确定", cancel="取消", width=300):
+        """显示带正确 app icon 的输入弹窗（替代 rumps.Window）
+
+        Returns:
+            (clicked: bool, text: str)
+        """
+        if _HAS_APPKIT:
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_(title)
+            alert.setInformativeText_(message)
+            if os.path.isfile(APP_ICON_PNG):
+                _icon = NSImage.alloc().initWithContentsOfFile_(APP_ICON_PNG)
+                if _icon:
+                    alert.setIcon_(_icon)
+            alert.addButtonWithTitle_(ok)
+            alert.addButtonWithTitle_(cancel)
+            field = NSTextField.alloc().initWithFrame_(((0, 0), (width, 24)))
+            field.setStringValue_(default_text)
+            alert.setAccessoryView_(field)
+            alert.window().setInitialFirstResponder_(field)
+            result = alert.runModal()
+            clicked = (result == 1000)
+            text = str(field.stringValue()) if clicked else ""
+            return clicked, text
+        else:
+            window = rumps.Window(
+                message=message, title=title, default_text=default_text,
+                ok=ok, cancel=cancel, dimensions=(width, 24),
+            )
+            resp = window.run()
+            return bool(resp.clicked), (resp.text if resp.clicked else "")
+
+    def _confirm_dialog(self, title, message, ok="确定", cancel="取消"):
+        """显示带正确 app icon 的确认弹窗（无输入框）
+
+        Returns:
+            bool: 是否点了确定
+        """
+        if _HAS_APPKIT:
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_(title)
+            alert.setInformativeText_(message)
+            if os.path.isfile(APP_ICON_PNG):
+                _icon = NSImage.alloc().initWithContentsOfFile_(APP_ICON_PNG)
+                if _icon:
+                    alert.setIcon_(_icon)
+            alert.addButtonWithTitle_(ok)
+            alert.addButtonWithTitle_(cancel)
+            return alert.runModal() == 1000
+        else:
+            window = rumps.Window(
+                message=message, title=title, default_text="",
+                ok=ok, cancel=cancel, dimensions=(0, 0),
+            )
+            return bool(window.run().clicked)
+
     def _release_front(self):
         """恢复为菜单栏应用（隐藏 Dock 图标）"""
         if _HAS_APPKIT:
@@ -544,18 +601,14 @@ class WeChatSummaryApp(rumps.App):
 
         self._bring_to_front()
         try:
-            window = rumps.Window(
-                message=f"当前 AI 服务：{provider_name}\n{hint}\n\nKey 将安全存储在 macOS 钥匙串中",
-                title="设置 API Key",
-                default_text="",
-                ok="保存",
-                cancel="取消",
-                dimensions=(380, 24),
+            clicked, text = self._input_dialog(
+                "设置 API Key",
+                f"当前 AI 服务：{provider_name}\n{hint}\n\nKey 将安全存储在 macOS 钥匙串中",
+                ok="保存", width=380,
             )
-            response = window.run()
 
-            if response.clicked and response.text.strip():
-                key = response.text.strip()
+            if clicked and text.strip():
+                key = text.strip()
                 if save_key("ai-api-key", key):
                     self.ai = None
                     _notify("微信总结", "API Key 已保存", "密钥已安全存储在 macOS 钥匙串中")
@@ -572,15 +625,12 @@ class WeChatSummaryApp(rumps.App):
     def _show_reset_bookmarks_dialog(self):
         self._bring_to_front()
         try:
-            window = rumps.Window(
-                message="清除后，所有群聊将变为「未总结」状态，\n下次点击总结时会重新读取最近消息。\n\n确定要重置吗？",
-                title="重置所有书签",
+            confirmed = self._confirm_dialog(
+                "重置所有书签",
+                "清除后，所有群聊将变为「未总结」状态，\n下次点击总结时会重新读取最近消息。\n\n确定要重置吗？",
                 ok="确定重置",
-                cancel="取消",
-                dimensions=(0, 0),
             )
-            response = window.run()
-            if response.clicked:
+            if confirmed:
                 clear_all_bookmarks()
                 if self.db:
                     self.db.invalidate_cache()
@@ -767,18 +817,14 @@ class WeChatSummaryApp(rumps.App):
         self._bring_to_front()
         try:
             if not _HAS_APPKIT:
-                # 降级：用 rumps.Window 单输入框
-                window = rumps.Window(
-                    message=f"群聊：{group_name}\n\n输入条数（如 50）或分钟数加m（如 30m）",
-                    title="自定义总结",
-                    default_text="50",
-                    ok="开始总结",
-                    cancel="取消",
-                    dimensions=(300, 24),
+                # 降级：用 _input_dialog 单输入框
+                clicked, text = self._input_dialog(
+                    "自定义总结",
+                    f"群聊：{group_name}\n\n输入条数（如 50）或分钟数加m（如 30m）",
+                    default_text="50", ok="开始总结",
                 )
-                response = window.run()
-                if response.clicked and response.text.strip():
-                    text = response.text.strip()
+                if clicked and text.strip():
+                    text = text.strip()
                     if text.lower().endswith("m"):
                         minutes = int(text[:-1])
                         threading.Thread(
@@ -1154,17 +1200,13 @@ class WeChatSummaryApp(rumps.App):
     def _show_create_group_dialog(self):
         self._bring_to_front()
         try:
-            window = rumps.Window(
-                message="请输入分组名称，例如：购物群、工作群、学习群",
-                title="新建分组",
-                default_text="",
+            clicked, text = self._input_dialog(
+                "新建分组",
+                "请输入分组名称，例如：购物群、工作群、学习群",
                 ok="创建",
-                cancel="取消",
-                dimensions=(300, 24),
             )
-            response = window.run()
-            if response.clicked and response.text.strip():
-                name = response.text.strip()
+            if clicked and text.strip():
+                name = text.strip()
                 if create_group(name):
                     _notify("微信总结", "分组已创建", f"「{name}」，现在可以添加群聊了")
                     self._rebuild_chat_menu()
@@ -1181,15 +1223,12 @@ class WeChatSummaryApp(rumps.App):
     def _show_delete_group_dialog(self, group_name):
         self._bring_to_front()
         try:
-            window = rumps.Window(
-                message=f"确定要删除分组「{group_name}」吗？\n（不会影响群聊本身，只是移除分组）",
-                title="删除分组",
+            confirmed = self._confirm_dialog(
+                "删除分组",
+                f"确定要删除分组「{group_name}」吗？\n（不会影响群聊本身，只是移除分组）",
                 ok="确定删除",
-                cancel="取消",
-                dimensions=(0, 0),
             )
-            response = window.run()
-            if response.clicked:
+            if confirmed:
                 delete_group(group_name)
                 _notify("微信总结", "已删除", f"分组「{group_name}」已移除")
                 self._rebuild_chat_menu()
@@ -1222,7 +1261,6 @@ class WeChatSummaryApp(rumps.App):
             _notify("微信总结", "无可添加群聊", "所有群聊已在该分组中")
             return
 
-        # 用 rumps.Window 让用户输入序号
         self._bring_to_front()
         try:
             lines = []
@@ -1230,18 +1268,13 @@ class WeChatSummaryApp(rumps.App):
                 lines.append(f"{i}. {s['name']}")
             msg = f"输入要添加到「{group_name}」的群聊序号（多个用逗号分隔）：\n\n" + "\n".join(lines)
 
-            window = rumps.Window(
-                message=msg,
-                title=f"添加群聊到「{group_name}」",
-                default_text="",
-                ok="添加",
-                cancel="取消",
-                dimensions=(380, 24),
+            clicked, text = self._input_dialog(
+                f"添加群聊到「{group_name}」", msg,
+                ok="添加", width=380,
             )
-            response = window.run()
-            if response.clicked and response.text.strip():
+            if clicked and text.strip():
                 added = []
-                for part in response.text.strip().replace("，", ",").split(","):
+                for part in text.strip().replace("，", ",").split(","):
                     try:
                         idx = int(part.strip()) - 1
                         if 0 <= idx < len(available):
@@ -1429,7 +1462,7 @@ class WeChatSummaryApp(rumps.App):
         self._bring_to_front()
         try:
             if not _HAS_APPKIT:
-                # 降级：rumps.Window 单输入框
+                # 降级：单输入框
                 self._show_search_dialog_fallback(group_sessions)
                 return
 
@@ -1606,25 +1639,19 @@ class WeChatSummaryApp(rumps.App):
 
     def _show_search_dialog_fallback(self, group_sessions):
         """无 AppKit 时的降级搜索对话框"""
-        window = rumps.Window(
-            message=(
-                "格式：关键词|开始日期|结束日期\n"
-                "例如：claude api|2026-03-01|2026-03-09\n\n"
-                "多个关键词用空格分隔（必须同时出现）\n"
-                "结束日期留空则为今天\n"
-                "将搜索所有群聊，不使用 AI 总结"
-            ),
-            title="🔍 关键词搜索",
-            default_text="",
-            ok="搜索",
-            cancel="取消",
-            dimensions=(380, 24),
+        clicked, text = self._input_dialog(
+            "🔍 关键词搜索",
+            "格式：关键词|开始日期|结束日期\n"
+            "例如：claude api|2026-03-01|2026-03-09\n\n"
+            "多个关键词用空格分隔（必须同时出现）\n"
+            "结束日期留空则为今天\n"
+            "将搜索所有群聊，不使用 AI 总结",
+            ok="搜索", width=380,
         )
-        response = window.run()
-        if not response.clicked or not response.text.strip():
+        if not clicked or not text.strip():
             return
 
-        parts = response.text.strip().split("|")
+        parts = text.strip().split("|")
         if len(parts) < 2:
             _notify("微信总结", "格式错误", "请用 | 分隔关键词和日期")
             return
