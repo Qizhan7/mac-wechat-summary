@@ -231,13 +231,24 @@ class WeChatDB:
         """
         self._load_contacts()
         groups = []
+        unnamed_idx = 0
         for c in self._contacts_full:
             if "@chatroom" in c["username"]:
                 name = c["remark"] or c["nick_name"] or c["username"]
-                # 过滤无名群聊（nick_name 和 remark 都为空，显示原始 ID）
-                if not include_unnamed and name == c["username"]:
-                    continue
-                groups.append({"username": c["username"], "name": name})
+                if name == c["username"]:
+                    if include_unnamed:
+                        unnamed_idx += 1
+                        groups.append({"username": c["username"],
+                                       "name": f"无名称群{unnamed_idx}"})
+                    else:
+                        # 检查是否有消息，有的话保留并编号
+                        msgs = self.get_messages(c["username"], limit=1)
+                        if msgs:
+                            unnamed_idx += 1
+                            groups.append({"username": c["username"],
+                                           "name": f"无名称群{unnamed_idx}"})
+                else:
+                    groups.append({"username": c["username"], "name": name})
         return groups
 
     def get_recent_sessions(self, limit=200):
@@ -262,13 +273,15 @@ class WeChatDB:
             conn.close()
 
         sessions = []
+        unnamed_idx = 0
         for username, unread, summary, ts in rows:
             display = self._contacts.get(username, username)
             is_group = "@chatroom" in username
 
-            # 过滤无名群聊（nick_name 和 remark 都为空，显示为原始 ID）
+            # 无名群聊：在 SessionTable 里有记录说明活跃过，用编号显示
             if is_group and display == username:
-                continue
+                unnamed_idx += 1
+                display = f"无名称群{unnamed_idx}"
 
             if isinstance(summary, bytes):
                 try:
