@@ -220,8 +220,11 @@ class WeChatDB:
         self._contacts_full = full
         self._nick_to_remark = nick_to_remark
 
-    def get_groups(self):
+    def get_groups(self, include_unnamed=False):
         """获取所有群聊列表
+
+        Args:
+            include_unnamed: 是否包含没有群名的群聊（显示为原始 ID 的群）
 
         Returns:
             list[dict]: [{"username": "xxx@chatroom", "name": "群名"}, ...]
@@ -231,6 +234,9 @@ class WeChatDB:
         for c in self._contacts_full:
             if "@chatroom" in c["username"]:
                 name = c["remark"] or c["nick_name"] or c["username"]
+                # 过滤无名群聊（nick_name 和 remark 都为空，显示原始 ID）
+                if not include_unnamed and name == c["username"]:
+                    continue
                 groups.append({"username": c["username"], "name": name})
         return groups
 
@@ -259,6 +265,10 @@ class WeChatDB:
         for username, unread, summary, ts in rows:
             display = self._contacts.get(username, username)
             is_group = "@chatroom" in username
+
+            # 过滤无名群聊（nick_name 和 remark 都为空，显示为原始 ID）
+            if is_group and display == username:
+                continue
 
             if isinstance(summary, bytes):
                 try:

@@ -14,7 +14,9 @@ import rumps
 
 # --- 用于弹窗置顶 + 自定义对话框 ---
 try:
-    from AppKit import NSApplication, NSAlert, NSTextField, NSView, NSObject, NSButton, NSImage
+    from AppKit import (NSApplication, NSAlert, NSTextField, NSView, NSObject,
+                        NSButton, NSImage, NSFont, NSScrollView, NSTextView,
+                        NSBezelBorder)
     import objc
     _HAS_APPKIT = True
 except ImportError:
@@ -250,6 +252,18 @@ class WeChatSummaryApp(rumps.App):
             callback=self._toggle_group_nickname,
         ))
 
+        # 隐藏不活跃群聊
+        hide_months = self.config.get("hide_inactive_months", 1)
+        hide_menu = rumps.MenuItem("🕐 隐藏不活跃群聊")
+        options = [("关闭", 0), ("1 个月", 1), ("3 个月", 3), ("6 个月", 6)]
+        for label, val in options:
+            prefix = "✅ " if hide_months == val else "      "
+            hide_menu.add(rumps.MenuItem(
+                f"{prefix}{label}",
+                callback=self._make_hide_inactive_callback(val),
+            ))
+        settings.add(hide_menu)
+
         return settings
 
     def _rebuild_settings_menu(self):
@@ -414,6 +428,16 @@ class WeChatSummaryApp(rumps.App):
         _notify("微信总结", "设置已更新", f"总结中显示群昵称已{state}")
         self._rebuild_settings_menu()
 
+    def _make_hide_inactive_callback(self, months):
+        def callback(_):
+            self.config["hide_inactive_months"] = months
+            save_config(self.config)
+            label = f"{months} 个月" if months > 0 else "关闭"
+            _notify("微信总结", "设置已更新", f"隐藏不活跃群聊: {label}")
+            self._rebuild_settings_menu()
+            self._rebuild_chat_menu()
+        return callback
+
     def _make_provider_callback(self, provider_key):
         def callback(sender):
             self.config["ai_provider"] = provider_key
@@ -436,6 +460,11 @@ class WeChatSummaryApp(rumps.App):
         if _HAS_APPKIT:
             try:
                 app = NSApplication.sharedApplication()
+                # 确保弹窗和 Dock 显示正确的 app icon（而非 Python 火箭）
+                if os.path.isfile(APP_ICON_PNG):
+                    ns_icon = NSImage.alloc().initWithContentsOfFile_(APP_ICON_PNG)
+                    if ns_icon:
+                        app.setApplicationIconImage_(ns_icon)
                 app.setActivationPolicy_(0)   # Regular → 获得键盘焦点
                 app.activateIgnoringOtherApps_(True)
             except Exception:
@@ -676,6 +705,13 @@ class WeChatSummaryApp(rumps.App):
 
         sessions = self.db.get_recent_sessions(limit=200)
         group_sessions = [s for s in sessions if s["is_group"]]
+
+        # ── 过滤不活跃群聊 ──
+        hide_months = self.config.get("hide_inactive_months", 1)
+        if hide_months > 0:
+            import time as _time
+            cutoff_ts = _time.time() - hide_months * 30 * 86400
+            group_sessions = [s for s in group_sessions if s["timestamp"] >= cutoff_ts]
 
         # 找出已分组的群聊
         groups = load_groups()
@@ -1404,6 +1440,9 @@ class WeChatSummaryApp(rumps.App):
                 if _icon:
                     alert.setIcon_(_icon)
             alert.setMessageText_("🔍 关键词搜索")
+            alert.setInformativeText_("多个关键词用空格分隔（布尔与搜索：必须同时出现）")
+            alert.addButtonWithTitle_("开始搜索")
+            alert.addButtonWithTitle_("取消")
 
             # 构建群聊列表文字
             group_lines = []
@@ -1411,71 +1450,82 @@ class WeChatSummaryApp(rumps.App):
                 group_lines.append(f"{i}. {s['name']}")
             groups_text = "\n".join(group_lines)
 
-            alert.setInformativeText_(
-                f"多个关键词用空格分隔（布尔与搜索：必须同时出现）\n\n"
-                f"可选群聊：\n{groups_text}"
-            )
-            alert.addButtonWithTitle_("开始搜索")
-            alert.addButtonWithTitle_("取消")
+            # 自定义视图：输入框 + 可滚动群聊列表
+            view = NSView.alloc().initWithFrame_(((0, 0), (380, 310)))
 
-            # 自定义视图：5 个控件（从上到下）
-            view = NSView.alloc().initWithFrame_(((0, 0), (320, 160)))
-
-            # 行 4 (y=133): 关键词
-            lbl_kw = NSTextField.alloc().initWithFrame_(((0, 133), (80, 22)))
+            # 行 4 (y=283): 关键词
+            lbl_kw = NSTextField.alloc().initWithFrame_(((0, 283), (80, 22)))
             lbl_kw.setStringValue_("关键词：")
             lbl_kw.setBezeled_(False)
             lbl_kw.setEditable_(False)
             lbl_kw.setDrawsBackground_(False)
             view.addSubview_(lbl_kw)
 
-            field_kw = NSTextField.alloc().initWithFrame_(((80, 133), (230, 22)))
+            field_kw = NSTextField.alloc().initWithFrame_(((80, 283), (290, 22)))
             field_kw.setPlaceholderString_("如 claude api")
             view.addSubview_(field_kw)
 
-            # 行 3 (y=103): 开始日期
-            lbl_start = NSTextField.alloc().initWithFrame_(((0, 103), (80, 22)))
+            # 行 3 (y=253): 开始日期
+            lbl_start = NSTextField.alloc().initWithFrame_(((0, 253), (80, 22)))
             lbl_start.setStringValue_("开始日期：")
             lbl_start.setBezeled_(False)
             lbl_start.setEditable_(False)
             lbl_start.setDrawsBackground_(False)
             view.addSubview_(lbl_start)
 
-            field_start = NSTextField.alloc().initWithFrame_(((80, 103), (230, 22)))
+            field_start = NSTextField.alloc().initWithFrame_(((80, 253), (290, 22)))
             field_start.setPlaceholderString_("如 2026-03-01")
             view.addSubview_(field_start)
 
-            # 行 2 (y=73): 结束日期
-            lbl_end = NSTextField.alloc().initWithFrame_(((0, 73), (80, 22)))
+            # 行 2 (y=223): 结束日期
+            lbl_end = NSTextField.alloc().initWithFrame_(((0, 223), (80, 22)))
             lbl_end.setStringValue_("结束日期：")
             lbl_end.setBezeled_(False)
             lbl_end.setEditable_(False)
             lbl_end.setDrawsBackground_(False)
             view.addSubview_(lbl_end)
 
-            field_end = NSTextField.alloc().initWithFrame_(((80, 73), (230, 22)))
+            field_end = NSTextField.alloc().initWithFrame_(((80, 223), (290, 22)))
             field_end.setPlaceholderString_("留空 = 今天")
             view.addSubview_(field_end)
 
-            # 行 1 (y=43): 群聊范围
-            lbl_scope = NSTextField.alloc().initWithFrame_(((0, 43), (80, 22)))
+            # 行 1 (y=193): 群聊范围
+            lbl_scope = NSTextField.alloc().initWithFrame_(((0, 193), (80, 22)))
             lbl_scope.setStringValue_("群聊范围：")
             lbl_scope.setBezeled_(False)
             lbl_scope.setEditable_(False)
             lbl_scope.setDrawsBackground_(False)
             view.addSubview_(lbl_scope)
 
-            field_scope = NSTextField.alloc().initWithFrame_(((80, 43), (230, 22)))
+            field_scope = NSTextField.alloc().initWithFrame_(((80, 193), (290, 22)))
             field_scope.setPlaceholderString_("全部 或 序号如 1,3,5")
             field_scope.setStringValue_("全部")
             view.addSubview_(field_scope)
 
-            # 行 0 (y=8): AI 总结复选框
-            checkbox_ai = NSButton.alloc().initWithFrame_(((80, 8), (230, 22)))
+            # 行 0 (y=163): AI 总结复选框
+            checkbox_ai = NSButton.alloc().initWithFrame_(((80, 163), (290, 22)))
             checkbox_ai.setButtonType_(3)  # NSSwitchButton (checkbox)
             checkbox_ai.setTitle_("用 AI 总结搜索结果")
             checkbox_ai.setState_(0)  # 默认不勾选
             view.addSubview_(checkbox_ai)
+
+            # 可滚动群聊列表（固定高度，不会撑满屏幕）
+            lbl_groups = NSTextField.alloc().initWithFrame_(((0, 133), (380, 22)))
+            lbl_groups.setStringValue_(f"可选群聊（共 {len(group_sessions)} 个）：")
+            lbl_groups.setBezeled_(False)
+            lbl_groups.setEditable_(False)
+            lbl_groups.setDrawsBackground_(False)
+            view.addSubview_(lbl_groups)
+
+            scroll = NSScrollView.alloc().initWithFrame_(((0, 0), (380, 130)))
+            scroll.setHasVerticalScroller_(True)
+            scroll.setBorderType_(NSBezelBorder)
+            text_view = NSTextView.alloc().initWithFrame_(((0, 0), (360, 130)))
+            text_view.setEditable_(False)
+            text_view.setString_(groups_text)
+            text_view.setFont_(NSFont.systemFontOfSize_(11))
+            scroll.setDocumentView_(text_view)
+            view.addSubview_(scroll)
 
             alert.setAccessoryView_(view)
             alert.window().setInitialFirstResponder_(field_kw)
