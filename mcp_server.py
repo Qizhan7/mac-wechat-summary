@@ -42,13 +42,12 @@ mcp = FastMCP(
 # ── 懒加载单例 ──────────────────────────────────────────
 
 _db = None
+_keys_mtime = 0  # keys 文件的 mtime，用于检测密钥更新
 
 
 def _get_db():
-    """懒加载 WeChatDB，首次调用时初始化"""
-    global _db
-    if _db is not None:
-        return _db
+    """懒加载 WeChatDB，首次调用时初始化；密钥文件更新时自动重建"""
+    global _db, _keys_mtime
 
     from core.config import load_config
     from core.key_extractor import get_cached_keys
@@ -62,6 +61,12 @@ def _get_db():
             "或在 ~/.wechat-summary/config.json 中设置 db_dir。"
         )
 
+    # 检测 keys 文件是否被更新（菜单栏 app 重新提取密钥后会写入新文件）
+    keys_file = cfg.get("keys_file", os.path.expanduser("~/.wechat-summary/all_keys.json"))
+    cur_mtime = os.path.getmtime(keys_file) if os.path.exists(keys_file) else 0
+    if _db is not None and cur_mtime == _keys_mtime:
+        return _db
+
     keys = get_cached_keys()
     if not keys:
         raise RuntimeError(
@@ -69,6 +74,7 @@ def _get_db():
         )
 
     _db = WeChatDB(db_dir, keys)
+    _keys_mtime = cur_mtime
     return _db
 
 
@@ -608,12 +614,12 @@ def summarize_chat(
         if not messages:
             return f"{display}: 没有新消息需要总结"
 
-        messages_text = db.format_messages_for_ai(messages)
+        ai, cfg = _get_ai()
+        messages_text = db.format_messages_for_ai(
+            messages, show_group_nickname=cfg.get("show_group_nickname", True))
         start_time = messages[0]["time_str"]
         end_time = messages[-1]["time_str"]
         msg_count = len(messages)
-
-        ai, cfg = _get_ai()
         prompt = ai.build_prompt(
             group_name=display,
             messages_text=messages_text,
@@ -658,6 +664,8 @@ def summarize_group_batch(group_name: str, hours: int = 0) -> str:
 
         db = _get_db()
         db._load_contacts()
+        from core.config import load_config as _load_cfg
+        _cfg = _load_cfg()
         groups_data = []
 
         for username in chat_usernames:
@@ -672,7 +680,8 @@ def summarize_group_batch(group_name: str, hours: int = 0) -> str:
             msg_count = len(messages)
 
             if msg_count > 0:
-                messages_text = db.format_messages_for_ai(messages)
+                messages_text = db.format_messages_for_ai(
+                    messages, show_group_nickname=_cfg.get("show_group_nickname", True))
                 start_time = messages[0]["time_str"]
                 end_time = messages[-1]["time_str"]
                 # 更新书签

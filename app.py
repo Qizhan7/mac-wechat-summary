@@ -150,6 +150,7 @@ class WeChatSummaryApp(rumps.App):
             # 动态区域：最新总结(📝) 通过 insert_before "📋 最近总结" 插入
             rumps.MenuItem("📋 最近总结"),
             rumps.separator,
+            self._build_mcp_menu(),
             self._build_settings_menu(),
             rumps.MenuItem("重新提取密钥", callback=self.reextract_keys),
         ]
@@ -257,6 +258,144 @@ class WeChatSummaryApp(rumps.App):
             del self.menu["⚙️ 设置"]
         self.menu.insert_before("重新提取密钥", self._build_settings_menu())
 
+    # ── MCP 服务菜单 ──────────────────────────────────────
+
+    def _check_mcp_ready(self):
+        """检查 MCP Server 是否可以正常启动，返回问题列表（空 = 就绪）"""
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        venv_python = os.path.join(project_dir, ".venv", "bin", "python3")
+        mcp_server = os.path.join(project_dir, "mcp_server.py")
+
+        issues = []
+        if not os.path.isfile(venv_python):
+            issues.append("Python 虚拟环境未安装")
+        if not os.path.isfile(mcp_server):
+            issues.append("mcp_server.py 不存在")
+        db_dir = self.config.get("db_dir", "")
+        if not db_dir or not os.path.isdir(db_dir):
+            issues.append("数据库目录未配置")
+        if not get_cached_keys():
+            issues.append("数据库密钥未提取")
+        return issues
+
+    def _is_mcp_running(self):
+        """检测是否有 mcp_server.py 进程在运行"""
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", "mcp_server.py"],
+                capture_output=True, text=True,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def _get_mcp_config_snippet(self, client="claude_desktop"):
+        """生成 MCP 客户端配置"""
+        import json as _json
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        venv_python = os.path.join(project_dir, ".venv", "bin", "python3")
+        mcp_server = os.path.join(project_dir, "mcp_server.py")
+
+        if client == "claude_desktop":
+            return _json.dumps({
+                "mcpServers": {
+                    "wechat-summary": {
+                        "command": venv_python,
+                        "args": [mcp_server],
+                    }
+                }
+            }, indent=2, ensure_ascii=False)
+        else:
+            return f"claude mcp add wechat-summary {venv_python} {mcp_server}"
+
+    def _build_mcp_menu(self):
+        """构建 MCP 服务子菜单"""
+        mcp = rumps.MenuItem("🔌 MCP 服务")
+
+        # 状态
+        issues = self._check_mcp_ready()
+        if issues:
+            status_text = f"❌ {issues[0]}"
+        elif self._is_mcp_running():
+            status_text = "✅ 运行中"
+        else:
+            status_text = "✅ 就绪"
+        mcp.add(rumps.MenuItem(f"状态: {status_text}"))
+
+        mcp.add(rumps.separator)
+
+        mcp.add(rumps.MenuItem(
+            "📋 复制 Claude Desktop 配置",
+            callback=self._copy_claude_desktop_config,
+        ))
+        mcp.add(rumps.MenuItem(
+            "📋 复制 Claude Code 命令",
+            callback=self._copy_claude_code_config,
+        ))
+
+        mcp.add(rumps.separator)
+
+        mcp.add(rumps.MenuItem(
+            "🧪 测试 MCP 服务",
+            callback=self._test_mcp_server,
+        ))
+
+        return mcp
+
+    def _rebuild_mcp_menu(self):
+        """重建 MCP 服务菜单"""
+        if "🔌 MCP 服务" in self.menu:
+            del self.menu["🔌 MCP 服务"]
+        self.menu.insert_before("⚙️ 设置", self._build_mcp_menu())
+
+    def _copy_claude_desktop_config(self, _):
+        snippet = self._get_mcp_config_snippet("claude_desktop")
+        process = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+        process.communicate(snippet.encode("utf-8"))
+        _notify("MCP 服务", "已复制到剪贴板",
+                "粘贴到 claude_desktop_config.json 即可")
+
+    def _copy_claude_code_config(self, _):
+        snippet = self._get_mcp_config_snippet("claude_code")
+        process = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+        process.communicate(snippet.encode("utf-8"))
+        _notify("MCP 服务", "已复制到剪贴板",
+                "在终端粘贴执行即可添加 MCP 服务")
+
+    def _test_mcp_server(self, _):
+        """测试 MCP 服务能否正常启动"""
+        threading.Thread(target=self._do_mcp_test, daemon=True).start()
+
+    def _do_mcp_test(self):
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        venv_python = os.path.join(project_dir, ".venv", "bin", "python3")
+        mcp_server = os.path.join(project_dir, "mcp_server.py")
+
+        if not os.path.isfile(venv_python):
+            _notify("MCP 服务", "测试失败", "Python 虚拟环境未安装")
+            return
+
+        try:
+            proc = subprocess.Popen(
+                [venv_python, mcp_server],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            time.sleep(2)
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                _notify("MCP 服务", "测试通过 ✅", "MCP 服务器启动正常")
+            else:
+                stderr = proc.stderr.read().decode(errors="replace")
+                _notify("MCP 服务", "启动失败 ❌", stderr[:200] or "未知错误")
+        except Exception as e:
+            _notify("MCP 服务", "测试失败 ❌", str(e)[:200])
+
     def _toggle_auto_refresh(self, _):
         """切换「打开菜单时自动刷新」"""
         current = self.config.get("auto_refresh_on_open", False)
@@ -353,6 +492,7 @@ class WeChatSummaryApp(rumps.App):
         try:
             if self.db:
                 self._run_on_main(self._rebuild_chat_menu)
+                self._run_on_main(self._rebuild_mcp_menu)
                 print("[auto-refresh] ✓ 群聊列表已刷新")
         except Exception:
             traceback.print_exc()
@@ -534,7 +674,7 @@ class WeChatSummaryApp(rumps.App):
         if not self.db:
             return
 
-        sessions = self.db.get_recent_sessions(limit=50)
+        sessions = self.db.get_recent_sessions(limit=200)
         group_sessions = [s for s in sessions if s["is_group"]]
 
         # 找出已分组的群聊
@@ -1030,9 +1170,8 @@ class WeChatSummaryApp(rumps.App):
             _notify("微信总结", "未初始化", "请先确保微信已登录")
             return
 
-        # 获取所有群聊
-        sessions = self.db.get_recent_sessions(limit=50)
-        group_sessions = [s for s in sessions if s["is_group"]]
+        # 从 contact.db 获取所有群聊（不受 session 数量限制）
+        group_sessions = self.db.get_groups()
 
         if not group_sessions:
             _notify("微信总结", "暂无群聊", "请先刷新群聊列表")
@@ -1244,9 +1383,8 @@ class WeChatSummaryApp(rumps.App):
         if not self.db:
             return
 
-        # 获取群聊列表（用于群聊范围选择）
-        sessions = self.db.get_recent_sessions(limit=50)
-        group_sessions = [s for s in sessions if s["is_group"]]
+        # 从 contact.db 获取所有群聊（不受 session 数量限制）
+        group_sessions = self.db.get_groups()
 
         if not group_sessions:
             _notify("微信总结", "暂无群聊", "请先刷新群聊列表")

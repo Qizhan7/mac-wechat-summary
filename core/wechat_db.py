@@ -111,6 +111,14 @@ class WeChatDB:
         self._contacts = None
         self._contacts_full = None
         self._nick_to_remark = {}
+        # 清理磁盘上的缓存文件
+        if os.path.isdir(self.CACHE_DIR):
+            import glob as _glob
+            for f in _glob.glob(os.path.join(self.CACHE_DIR, "*.db")):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
 
     def _get_key(self, rel_path):
         """获取数据库密钥"""
@@ -157,7 +165,10 @@ class WeChatDB:
         # 检查缓存
         if rel_path in self._db_cache:
             c_db_mt, c_wal_mt, c_path = self._db_cache[rel_path]
-            if c_db_mt == db_mtime and c_wal_mt == wal_mtime and os.path.exists(c_path):
+            # WAL checkpoint 后 WAL 文件消失（wal_mtime 从非零变 0），
+            # 此时如果 db_mtime 也没变（数据已合入主文件），缓存仍然有效
+            wal_ok = (c_wal_mt == wal_mtime) or (wal_mtime == 0 and c_db_mt == db_mtime)
+            if c_db_mt == db_mtime and wal_ok and os.path.exists(c_path):
                 return c_path
 
         # 解密
@@ -200,8 +211,8 @@ class WeChatDB:
                 # 如果有备注名，建立 昵称→备注 的反向映射
                 if remark and nick:
                     nick_to_remark[nick] = remark
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[wechat_db] warning: 加载联系人失败: {e}", file=__import__('sys').stderr)
         finally:
             conn.close()
 
@@ -223,7 +234,7 @@ class WeChatDB:
                 groups.append({"username": c["username"], "name": name})
         return groups
 
-    def get_recent_sessions(self, limit=30):
+    def get_recent_sessions(self, limit=200):
         """获取最近会话（含群聊和私聊）"""
         path = self._get_decrypted_db(os.path.join("session", "session.db"))
         if not path:
