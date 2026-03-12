@@ -778,9 +778,9 @@ class WeChatSummaryApp(rumps.App):
                 item = rumps.MenuItem(title)
                 item.add(rumps.MenuItem("📝 总结新消息", callback=self._make_summary_callback(session)))
                 item.add(rumps.MenuItem("🔧 自定义总结…", callback=self._make_custom_summary_callback(session)))
-                self.menu.insert_after("刷新群聊列表", item)
+                self.menu.insert_after("🔍 关键词搜索", item)
         elif not groups:
-            self.menu.insert_after("刷新群聊列表", rumps.MenuItem("📎 (暂无群聊)"))
+            self.menu.insert_after("🔍 关键词搜索", rumps.MenuItem("📎 (暂无群聊)"))
 
         # ── 分组（insert_before 正序插入到 "📋 最近总结" 前面）──
         if groups:
