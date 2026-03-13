@@ -443,10 +443,7 @@ class WeChatDB:
 
         # 按时间排序，取最新的 limit 条
         all_rows.sort(key=lambda r: r[1])  # r[1] = create_time
-        if since_ts > 0:
-            rows = all_rows[:limit]
-        else:
-            rows = all_rows[-limit:]
+        rows = all_rows[-limit:]
 
         # 私聊时，用联系人显示名标注对方消息
         contact_name = ""
