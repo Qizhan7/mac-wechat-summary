@@ -252,6 +252,17 @@ class WeChatSummaryApp(rumps.App):
             callback=self._toggle_group_nickname,
         ))
 
+        # 小组总结每群消息条数
+        batch_limit = self.config.get("batch_msg_limit", 100)
+        batch_menu = rumps.MenuItem("📊 小组总结每群条数")
+        for val in [50, 100, 200, 500]:
+            prefix = "✅ " if batch_limit == val else "      "
+            batch_menu.add(rumps.MenuItem(
+                f"{prefix}{val} 条",
+                callback=self._make_batch_limit_callback(val),
+            ))
+        settings.add(batch_menu)
+
         # 隐藏不活跃群聊
         hide_months = self.config.get("hide_inactive_months", 1)
         hide_menu = rumps.MenuItem("🕐 隐藏不活跃群聊")
@@ -427,6 +438,14 @@ class WeChatSummaryApp(rumps.App):
         state = "开启" if not current else "关闭"
         _notify("微信总结", "设置已更新", f"总结中显示群昵称已{state}")
         self._rebuild_settings_menu()
+
+    def _make_batch_limit_callback(self, val):
+        def callback(_):
+            self.config["batch_msg_limit"] = val
+            save_config(self.config)
+            _notify("微信总结", "设置已更新", f"小组总结每群条数: {val}")
+            self._rebuild_settings_menu()
+        return callback
 
     def _make_hide_inactive_callback(self, months):
         def callback(_):
@@ -1337,7 +1356,8 @@ class WeChatSummaryApp(rumps.App):
                 chat_name = self._get_chat_display_name(username)
                 since_ts = get_bookmark(username)
 
-                messages = self.db.get_messages(username, since_ts=since_ts, limit=500)
+                batch_limit = self.config.get("batch_msg_limit", 100)
+                messages = self.db.get_messages(username, since_ts=since_ts, limit=batch_limit)
 
                 if messages:
                     messages_text = self.db.format_messages_for_ai(messages, show_group_nickname=self.config.get("show_group_nickname", True))
@@ -1355,7 +1375,7 @@ class WeChatSummaryApp(rumps.App):
                         "msg_count": msg_count,
                         "last_msg_ts": messages[-1]["timestamp"],
                     })
-                    print(f"[batch]   {chat_name}: {msg_count} 条消息")
+                    print(f"[batch]   {chat_name}: {msg_count} 条消息（限 {batch_limit}）")
                 else:
                     groups_data.append({
                         "name": chat_name,
