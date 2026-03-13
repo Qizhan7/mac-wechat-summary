@@ -1,14 +1,14 @@
 """
-微信群聊 MCP Server - 通过 AI 代理查询和总结微信消息
+WeChat Group Chat MCP Server - Query and summarize WeChat messages via AI agents.
 
-基于 FastMCP，复用现有 core/ 和 ai/ 模块。
-STDIO 传输，供 Claude Desktop / Claude Code 使用。
+Built on FastMCP, reusing existing core/ and ai/ modules.
+STDIO transport, for use with Claude Desktop / Claude Code.
 
-使用方法：
-  python mcp_server.py          # 直接运行
-  mcp dev mcp_server.py         # MCP Inspector 调试
+Usage:
+  python mcp_server.py          # Run directly
+  mcp dev mcp_server.py         # MCP Inspector debug
 
-Claude Desktop 配置 (~/Library/Application Support/Claude/claude_desktop_config.json)：
+Claude Desktop config (~/Library/Application Support/Claude/claude_desktop_config.json):
   {
     "mcpServers": {
       "wechat-summary": {
@@ -23,7 +23,7 @@ import sys
 import time
 from datetime import datetime
 
-# 确保项目根目录可导入
+# Ensure project root is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP
@@ -39,14 +39,14 @@ mcp = FastMCP(
     ),
 )
 
-# ── 懒加载单例 ──────────────────────────────────────────
+# ── Lazy-loaded singleton ──────────────────────────────
 
 _db = None
-_keys_mtime = 0  # keys 文件的 mtime，用于检测密钥更新
+_keys_mtime = 0  # keys file mtime, used to detect key updates
 
 
 def _get_db():
-    """懒加载 WeChatDB，首次调用时初始化；密钥文件更新时自动重建"""
+    """Lazy-load WeChatDB singleton; auto-rebuild when keys file is updated."""
     global _db, _keys_mtime
 
     from core.config import load_config
@@ -61,7 +61,7 @@ def _get_db():
             "或在 ~/.wechat-summary/config.json 中设置 db_dir。"
         )
 
-    # 检测 keys 文件是否被更新（菜单栏 app 🔄 刷新数据源后会写入新文件）
+    # Detect if keys file was updated (menu bar app writes new file after refresh)
     keys_file = cfg.get("keys_file", os.path.expanduser("~/.wechat-summary/all_keys.json"))
     cur_mtime = os.path.getmtime(keys_file) if os.path.exists(keys_file) else 0
     if _db is not None and cur_mtime == _keys_mtime:
@@ -79,7 +79,7 @@ def _get_db():
 
 
 def _get_ai():
-    """创建 AI 提供者实例"""
+    """Create AI provider instance."""
     from ai.factory import create_provider
     from core.config import load_config
 
@@ -88,7 +88,7 @@ def _get_ai():
 
 
 def _resolve(chat_name: str):
-    """将群名/昵称解析为 (username, display_name)"""
+    """Resolve group name/nickname to (username, display_name)."""
     db = _get_db()
     username = db.resolve_username(chat_name)
     if not username:
@@ -99,7 +99,7 @@ def _resolve(chat_name: str):
 
 
 # ══════════════════════════════════════════════════════════
-#  A. 状态与发现
+#  A. Status & Discovery
 # ══════════════════════════════════════════════════════════
 
 
@@ -161,7 +161,7 @@ def list_chats(chat_type: str = "all") -> str:
             if "@chatroom" in c["username"]:
                 groups.append(name)
             elif not c["username"].startswith("gh_") and "@" not in c["username"]:
-                # 排除公众号(gh_)和特殊账号
+                # Exclude official accounts (gh_) and special accounts
                 privates.append(name)
 
         lines = []
@@ -173,7 +173,7 @@ def list_chats(chat_type: str = "all") -> str:
 
         if chat_type in ("all", "private"):
             lines.append(f"私聊联系人（{len(privates)}个）：\n")
-            for name in privates[:100]:  # 联系人可能很多，限制显示
+            for name in privates[:100]:  # Contacts may be numerous, limit display
                 lines.append(f"  • {name}")
             if len(privates) > 100:
                 lines.append(f"  ... 还有 {len(privates) - 100} 个联系人")
@@ -184,7 +184,7 @@ def list_chats(chat_type: str = "all") -> str:
 
 
 # ══════════════════════════════════════════════════════════
-#  B. 消息读取
+#  B. Message Reading
 # ══════════════════════════════════════════════════════════
 
 
@@ -263,9 +263,6 @@ def get_chat_images(
     读取本地文件或从 CDN 下载表情包，以 base64 编码返回。
     默认返回缩略图（较小较快），使用 full_size=True 获取原图。
 
-    注意：2026 年 3 月起微信启用 V2 加密格式，该格式图片暂不支持查看，
-    会自动跳过。2026 年 2 月及之前的图片均可正常查看。
-
     Args:
         chat_name: 群聊名称或聊天对象名字，支持模糊匹配
         limit: 最多返回几张图片，默认 5（最大 10）
@@ -285,7 +282,7 @@ def get_chat_images(
         if hours > 0:
             since_ts = time.time() - hours * 3600
 
-        # 同时获取普通图片和表情包
+        # Fetch both regular images and stickers
         image_msgs = db.get_image_messages(
             username, since_ts=since_ts, limit=limit
         )
@@ -293,7 +290,7 @@ def get_chat_images(
             username, since_ts=since_ts, limit=limit
         )
 
-        # 合并并按时间排序，取 limit 条
+        # Merge, sort by time, take limit entries
         all_msgs = image_msgs + emoji_msgs
         all_msgs.sort(key=lambda m: m["timestamp"])
         if since_ts > 0:
@@ -323,10 +320,9 @@ def get_chat_images(
             text=f"📷 {display} — {'、'.join(header_parts)}\n",
         )]
 
-        MAX_TOTAL_BYTES = 3 * 1024 * 1024  # 3MB 总图片数据上限
+        MAX_TOTAL_BYTES = 3 * 1024 * 1024  # 3MB total image data cap
         found_count = 0
         total_bytes = 0
-        skipped_v2 = 0
         skipped_size = False
         for msg in all_msgs:
             sender_info = f"{msg['sender']}发送" if msg.get("sender") else "发送"
@@ -339,7 +335,7 @@ def get_chat_images(
             ))
 
             if is_emoji:
-                # 表情包：从 CDN 下载
+                # Sticker: download from CDN
                 image_data = _download_emoji(msg)
                 if image_data is None:
                     results.append(TextContent(
@@ -348,7 +344,7 @@ def get_chat_images(
                     ))
                     continue
             else:
-                # 普通图片：读取本地文件
+                # Regular image: read local file
                 if full_size:
                     file_path = msg.get("image_path") or msg.get("thumb_path")
                 else:
@@ -371,31 +367,7 @@ def get_chat_images(
                     ))
                     continue
 
-                # V2 加密格式 (WeChat 2026+) — 尝试解密
-                if image_data[:6] == b"\x07\x08\x56\x32\x08\x07":
-                    from core.wechat_db import WeChatDB
-                    from core.config import load_config
-
-                    aes_key = load_config().get("image_aes_key", "")
-                    if aes_key:
-                        decoded = WeChatDB.decode_image_v2(image_data, aes_key)
-                        if decoded:
-                            image_data = decoded
-                        else:
-                            results.append(TextContent(
-                                type="text",
-                                text="  (V2 解密失败，密钥可能已过期)",
-                            ))
-                            continue
-                    else:
-                        results.append(TextContent(
-                            type="text",
-                            text="  (V2 加密图片，需要提取密钥后才能查看)",
-                        ))
-                        skipped_v2 += 1
-                        continue
-
-            # 检测 MIME 类型
+            # Detect MIME type
             mime_type = _detect_mime(image_data)
             if not mime_type:
                 results.append(TextContent(
@@ -432,8 +404,6 @@ def get_chat_images(
         summary = f"\n共获取 {found_count}/{len(all_msgs)} 张图片/表情包"
         if skipped_size:
             summary += "\n📦 因数据量上限跳过了部分图片，可减少 limit 值"
-        if skipped_v2 > 0:
-            summary += "\n💡 部分图片为 V2 加密格式，需要提取密钥才能查看"
         results.append(TextContent(type="text", text=summary))
         return results
 
@@ -444,7 +414,7 @@ def get_chat_images(
 
 
 def _detect_mime(data: bytes) -> str | None:
-    """检测图片数据的 MIME 类型"""
+    """Detect image data MIME type."""
     if not data or len(data) < 4:
         return None
     if data[:2] == b"\xff\xd8":
@@ -459,14 +429,14 @@ def _detect_mime(data: bytes) -> str | None:
 
 
 def _download_emoji(msg: dict, timeout: int = 10) -> bytes | None:
-    """从 CDN 下载表情包图片
+    """Download sticker image from CDN.
 
     Args:
-        msg: 表情包消息字典，需包含 cdnurl
-        timeout: 下载超时秒数
+        msg: Sticker message dict, must contain cdnurl
+        timeout: Download timeout in seconds
 
     Returns:
-        bytes | None: 图片数据，失败返回 None
+        bytes | None: Image data, or None on failure
     """
     import urllib.request
 
@@ -480,10 +450,10 @@ def _download_emoji(msg: dict, timeout: int = 10) -> bytes | None:
             headers={"User-Agent": "Mozilla/5.0"},
         )
         resp = urllib.request.urlopen(req, timeout=timeout)
-        # 限制最大读取 2MB
+        # Limit max read to 2MB
         data = resp.read(2 * 1024 * 1024)
 
-        # 验证是否为有效图片
+        # Validate as valid image
         if _detect_mime(data):
             return data
 
@@ -506,7 +476,7 @@ def search_messages(keywords: str, chat_names: str = "", days: int = 30) -> str:
         end_ts = time.time()
         start_ts = end_ts - days * 86400
 
-        # 解析群聊范围
+        # Parse chat scope
         usernames = []
         if chat_names.strip():
             for name in chat_names.split(","):
@@ -536,7 +506,7 @@ def search_messages(keywords: str, chat_names: str = "", days: int = 30) -> str:
                 continue
             group_name = db._contacts.get(username, username)
             lines.append(f"\n--- {group_name}（{len(messages)}条）---")
-            for msg in messages[:50]:  # 每群最多显示 50 条
+            for msg in messages[:50]:  # Max 50 messages per group
                 if msg["sender"]:
                     lines.append(f"[{msg['time_str']}] {msg['sender']}: {msg['text']}")
                 else:
@@ -578,7 +548,7 @@ def count_new_messages(chat_name: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════
-#  C. AI 总结
+#  C. AI Summary
 # ══════════════════════════════════════════════════════════
 
 
@@ -603,7 +573,7 @@ def summarize_chat(
         username, display = _resolve(chat_name)
         db = _get_db()
 
-        # 确定时间范围
+        # Determine time range
         if hours > 0:
             since_ts = time.time() - hours * 3600
         else:
@@ -684,7 +654,7 @@ def summarize_group_batch(group_name: str, hours: int = 0) -> str:
                     messages, show_group_nickname=_cfg.get("show_group_nickname", True))
                 start_time = messages[0]["time_str"]
                 end_time = messages[-1]["time_str"]
-                # 更新书签
+                # Update bookmark
                 set_bookmark(username, messages[-1]["timestamp"])
             else:
                 messages_text = ""
@@ -699,7 +669,7 @@ def summarize_group_batch(group_name: str, hours: int = 0) -> str:
                 "msg_count": msg_count,
             })
 
-        # 如果所有群都没有新消息
+        # If no groups have new messages
         total = sum(g["msg_count"] for g in groups_data)
         if total == 0:
             return f"分组「{group_name}」下所有群聊都没有新消息"
@@ -755,7 +725,7 @@ def summarize_search_results(
         if not results:
             return f"未搜索到包含「{keywords}」的消息，无法生成总结"
 
-        # 为搜索结果添加 group_name
+        # Add group_name to search results
         db._load_contacts()
         for username, messages in results.items():
             group_name_display = db._contacts.get(username, username)
@@ -778,7 +748,7 @@ def summarize_search_results(
 
 
 # ══════════════════════════════════════════════════════════
-#  D. 管理
+#  D. Management
 # ══════════════════════════════════════════════════════════
 
 
@@ -801,7 +771,7 @@ def get_bookmark_status(chat_name: str = "") -> str:
             time_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
             return f"{display}: 上次读到 {time_str}，总结于 {summary_time or '未知'}"
 
-        # 列出所有书签
+        # List all bookmarks
         bookmarks = load_bookmarks()
         if not bookmarks:
             return "还没有任何书签记录。"
@@ -932,7 +902,7 @@ def get_ai_config() -> str:
         return f"获取配置失败: {e}"
 
 
-# ── E. 消息发送 ──────────────────────────────────────────
+# ── E. Message Sending ────────────────────────────────────
 
 
 @mcp.tool()
@@ -961,7 +931,7 @@ def send_message(text: str, chat_name: str = "") -> str:
         return f"❌ 发送失败: {e}"
 
 
-# ── 入口 ─────────────────────────────────────────────────
+# ── Entry point ───────────────────────────────────────────
 
 if __name__ == "__main__":
     mcp.run()

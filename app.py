@@ -1,5 +1,5 @@
 """
-微信群聊 AI 总结 - macOS 菜单栏工具
+WeChat Group Chat AI Summary - macOS menu bar tool
 """
 import os
 import queue
@@ -12,7 +12,7 @@ from datetime import datetime
 
 import rumps
 
-# --- 用于弹窗置顶 + 自定义对话框 ---
+# --- For dialog top-most + custom dialogs ---
 try:
     from AppKit import (NSApplication, NSAlert, NSTextField, NSView, NSObject,
                         NSButton, NSImage, NSFont, NSScrollView, NSTextView,
@@ -22,10 +22,10 @@ try:
 except ImportError:
     _HAS_APPKIT = False
 
-# ── 菜单打开检测（NSMenuDelegate）──────────────────────
+# ── Menu open detection (NSMenuDelegate) ──────────────────────
 if _HAS_APPKIT:
     class _MenuOpenDelegate(NSObject):
-        """NSMenuDelegate：检测菜单打开事件以触发自动刷新"""
+        """NSMenuDelegate: detect menu open events to trigger auto-refresh."""
 
         def init(self):
             self = objc.super(_MenuOpenDelegate, self).init()
@@ -39,14 +39,14 @@ if _HAS_APPKIT:
             app = self.app_ref
             if not app:
                 return
-            # 点击菜单时，如果处于完成/错误状态且不在总结中，恢复正常图标
+            # On menu click, if in done/error state and not summarizing, restore normal icon
             if (not app._summarizing
                     and getattr(app, '_current_status', None) in (ICON_DONE, ICON_ERROR)):
                 app._set_status(ICON_NORMAL)
             if (app.config.get("auto_refresh_on_open")
                     and app.db and not app._summarizing):
                 now = time.time()
-                if now - self._last_refresh > 5:  # 至少间隔 5 秒
+                if now - self._last_refresh > 5:  # At least 5 seconds between refreshes
                     self._last_refresh = now
                     print("[auto-refresh] 菜单打开，后台刷新群聊...")
                     threading.Thread(target=app._do_silent_refresh, daemon=True).start()
@@ -70,11 +70,11 @@ from core.chat_groups import (
 )
 from ai.factory import create_provider
 
-# 总结历史保存目录
+# Summary history save directory
 SUMMARY_DIR = os.path.join(DATA_DIR, "summaries")
 os.makedirs(SUMMARY_DIR, exist_ok=True)
 
-# AI 服务列表
+# AI service list
 AI_PROVIDERS = [
     ("qwen", "通义千问 (推荐)"),
     ("deepseek", "DeepSeek"),
@@ -83,7 +83,7 @@ AI_PROVIDERS = [
     ("openai", "OpenAI"),
 ]
 
-# 菜单栏图标：优先使用 PNG 图片（更可靠），emoji 作为 fallback
+# Menu bar icon: prefer PNG (more reliable), emoji as fallback
 _ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources")
 ICON_PNG = os.path.join(_ICON_DIR, "icon.png")
 ICON_LOADING_PNG = os.path.join(_ICON_DIR, "icon_loading.png")
@@ -92,13 +92,13 @@ ICON_ERROR_PNG = os.path.join(_ICON_DIR, "icon_error.png")
 APP_ICON_PNG = os.path.join(_ICON_DIR, "app_icon.png")
 _USE_PNG_ICON = os.path.isfile(ICON_PNG)
 
-# emoji 后加一个空格，强制 macOS 分配稳定宽度，防止裁切
+# Add space after emoji to force macOS stable width, prevent clipping
 ICON_NORMAL = "💬 "
 ICON_LOADING = "⏳ "
 ICON_DONE = "✅ "
 ICON_ERROR = "❌ "
 
-# PNG 图标状态映射
+# PNG icon state mapping
 _ICON_PNG_MAP = {
     ICON_NORMAL: ICON_PNG,
     ICON_LOADING: ICON_LOADING_PNG,
@@ -108,7 +108,7 @@ _ICON_PNG_MAP = {
 
 
 def _notify(title, subtitle, message):
-    """安全发送通知，失败时降级为终端输出"""
+    """Send notification safely, fall back to terminal output on failure."""
     try:
         rumps.notification(title, subtitle, message)
     except Exception:
@@ -123,10 +123,10 @@ class WeChatSummaryApp(rumps.App):
     def __init__(self):
         if _USE_PNG_ICON:
             super().__init__("微信总结", icon=ICON_PNG, template=True, quit_button="退出")
-            self.title = None  # 仅显示图标，不显示文字
+            self.title = None  # Show icon only, no text
         else:
             super().__init__("微信总结", title=ICON_NORMAL, quit_button="退出")
-        # 设置应用图标（替换弹窗和 Dock 中的 Python 火箭图标）
+        # Set app icon (replace Python rocket icon in dialogs and Dock)
         if _HAS_APPKIT and os.path.isfile(APP_ICON_PNG):
             try:
                 ns_icon = NSImage.alloc().initWithContentsOfFile_(APP_ICON_PNG)
@@ -141,15 +141,15 @@ class WeChatSummaryApp(rumps.App):
         self._last_summary = None
         self._current_status = ICON_NORMAL
 
-        # 构建菜单
+        # Build menu
         self.menu = [
             rumps.MenuItem("刷新群聊列表", callback=self.refresh_groups),
             rumps.MenuItem("🔍 关键词搜索", callback=self._on_search_click),
             rumps.separator,
-            # 动态区域：未分组群聊(📎) 通过 insert_after 插入
+            # Dynamic area: ungrouped chats (📎) inserted via insert_after
             rumps.separator,
-            # 动态区域：分组(📂) 通过 insert_before "📋 最近总结" 插入
-            # 动态区域：最新总结(📝) 通过 insert_before "📋 最近总结" 插入
+            # Dynamic area: groups (📂) inserted via insert_before "📋 ..."
+            # Dynamic area: latest summary (📝) inserted before "📋 ..."
             rumps.MenuItem("📋 最近总结"),
             rumps.separator,
             self._build_mcp_menu(),
@@ -159,45 +159,45 @@ class WeChatSummaryApp(rumps.App):
 
         self._rebuild_summary_history()
 
-        # 主线程队列：后台线程通过此队列安全地更新 UI
+        # Main thread queue: background threads safely update UI via this queue
         self._main_queue = queue.Queue()
         self._queue_timer = rumps.Timer(self._process_main_queue, 0.3)
         self._queue_timer.start()
 
-        # 菜单打开自动刷新（NSMenuDelegate）
+        # Auto-refresh on menu open (NSMenuDelegate)
         self._menu_delegate = None
         if _HAS_APPKIT:
             self._setup_delegate_timer = rumps.Timer(self._setup_menu_delegate, 1)
             self._setup_delegate_timer.start()
 
-        # 后台初始化
+        # Background initialization
         threading.Thread(target=self._init_background, daemon=True).start()
 
-    # ── 安全设置菜单栏标题 ───────────────────────────────
+    # ── Safely set menu bar title ───────────────────────────────
 
     def _set_status(self, new_title):
-        """安全设置菜单栏状态图标"""
+        """Safely set menu bar status icon."""
         try:
             if _USE_PNG_ICON:
-                # 切换 PNG 图标，不显示文字
+                # Switch PNG icon, hide text
                 png_path = _ICON_PNG_MAP.get(new_title, ICON_PNG)
                 self.icon = png_path
                 self.title = None
             else:
-                self.title = " "       # 先设一个占位空格
-                time.sleep(0.05)       # 给 macOS 一点时间释放旧宽度
-                self.title = new_title # 再设新的 emoji
+                self.title = " "       # Set placeholder space first
+                time.sleep(0.05)       # Give macOS time to release old width
+                self.title = new_title # Then set new emoji
             self._current_status = new_title
         except Exception:
             self.title = new_title
 
-    # ── 设置菜单 ────────────────────────────────────────
+    # ── Settings menu ────────────────────────────────────────
 
     def _build_settings_menu(self):
-        """构建设置子菜单"""
+        """Build settings submenu."""
         settings = rumps.MenuItem("⚙️ 设置")
 
-        # AI 服务选择
+        # AI service selection
         ai_menu = rumps.MenuItem("🤖 AI 服务")
         current = self.config.get("ai_provider", "qwen")
         for key, label in AI_PROVIDERS:
@@ -209,7 +209,7 @@ class WeChatSummaryApp(rumps.App):
             ai_menu.add(item)
         settings.add(ai_menu)
 
-        # API Key 设置
+        # API Key settings
         has_key = bool(load_key("ai-api-key"))
         key_status = "已设置 ✅" if has_key else "未设置 ❌"
         settings.add(rumps.MenuItem(
@@ -217,14 +217,14 @@ class WeChatSummaryApp(rumps.App):
             callback=self._set_api_key,
         ))
 
-        # 重置
+        # Reset
         settings.add(rumps.separator)
         settings.add(rumps.MenuItem(
             "🗑️ 重置所有书签",
             callback=self._reset_bookmarks,
         ))
 
-        # 当前状态
+        # Current status
         settings.add(rumps.separator)
         settings.add(rumps.MenuItem(
             "📂 打开配置文件",
@@ -235,7 +235,7 @@ class WeChatSummaryApp(rumps.App):
             callback=self._open_summary_dir,
         ))
 
-        # 自动刷新开关
+        # Auto-refresh toggle
         settings.add(rumps.separator)
         auto_refresh = self.config.get("auto_refresh_on_open", False)
         refresh_prefix = "✅ " if auto_refresh else "      "
@@ -244,7 +244,7 @@ class WeChatSummaryApp(rumps.App):
             callback=self._toggle_auto_refresh,
         ))
 
-        # 显示群昵称开关
+        # Show group nickname toggle
         show_nickname = self.config.get("show_group_nickname", True)
         nick_prefix = "✅ " if show_nickname else "      "
         settings.add(rumps.MenuItem(
@@ -252,7 +252,7 @@ class WeChatSummaryApp(rumps.App):
             callback=self._toggle_group_nickname,
         ))
 
-        # 小组总结每群消息条数
+        # Batch summary message limit per group
         batch_limit = self.config.get("batch_msg_limit", 100)
         batch_menu = rumps.MenuItem("📊 小组总结每群条数")
         for val in [50, 100, 200, 500]:
@@ -263,7 +263,7 @@ class WeChatSummaryApp(rumps.App):
             ))
         settings.add(batch_menu)
 
-        # 隐藏不活跃群聊
+        # Hide inactive chats
         hide_months = self.config.get("hide_inactive_months", 1)
         hide_menu = rumps.MenuItem("🕐 隐藏不活跃群聊")
         options = [("关闭", 0), ("1 个月", 1), ("3 个月", 3), ("6 个月", 6)]
@@ -278,15 +278,15 @@ class WeChatSummaryApp(rumps.App):
         return settings
 
     def _rebuild_settings_menu(self):
-        """重建设置菜单（配置变更后）"""
+        """Rebuild settings menu (after config change)."""
         if "⚙️ 设置" in self.menu:
             del self.menu["⚙️ 设置"]
         self.menu.insert_before("🔄 刷新数据源", self._build_settings_menu())
 
-    # ── MCP 服务菜单 ──────────────────────────────────────
+    # ── MCP service menu ──────────────────────────────────────
 
     def _check_mcp_ready(self):
-        """检查 MCP Server 是否可以正常启动，返回问题列表（空 = 就绪）"""
+        """Check if MCP Server can start normally, return issue list (empty = ready)."""
         project_dir = os.path.dirname(os.path.abspath(__file__))
         venv_python = os.path.join(project_dir, ".venv", "bin", "python3")
         mcp_server = os.path.join(project_dir, "mcp_server.py")
@@ -304,7 +304,7 @@ class WeChatSummaryApp(rumps.App):
         return issues
 
     def _is_mcp_running(self):
-        """检测是否有 mcp_server.py 进程在运行"""
+        """Detect if mcp_server.py process is running."""
         try:
             result = subprocess.run(
                 ["pgrep", "-f", "mcp_server.py"],
@@ -315,7 +315,7 @@ class WeChatSummaryApp(rumps.App):
             return False
 
     def _get_mcp_config_snippet(self, client="claude_desktop"):
-        """生成 MCP 客户端配置"""
+        """Generate MCP client configuration."""
         import json as _json
         project_dir = os.path.dirname(os.path.abspath(__file__))
         venv_python = os.path.join(project_dir, ".venv", "bin", "python3")
@@ -334,10 +334,10 @@ class WeChatSummaryApp(rumps.App):
             return f"claude mcp add wechat-summary {venv_python} {mcp_server}"
 
     def _build_mcp_menu(self):
-        """构建 MCP 服务子菜单"""
+        """Build MCP service submenu."""
         mcp = rumps.MenuItem("🔌 MCP 服务")
 
-        # 状态
+        # Status
         issues = self._check_mcp_ready()
         if issues:
             status_text = f"❌ {issues[0]}"
@@ -368,7 +368,7 @@ class WeChatSummaryApp(rumps.App):
         return mcp
 
     def _rebuild_mcp_menu(self):
-        """重建 MCP 服务菜单"""
+        """Rebuild MCP service menu."""
         if "🔌 MCP 服务" in self.menu:
             del self.menu["🔌 MCP 服务"]
         self.menu.insert_before("⚙️ 设置", self._build_mcp_menu())
@@ -388,7 +388,7 @@ class WeChatSummaryApp(rumps.App):
                 "在终端粘贴执行即可添加 MCP 服务")
 
     def _test_mcp_server(self, _):
-        """测试 MCP 服务能否正常启动"""
+        """Test if MCP service can start normally."""
         threading.Thread(target=self._do_mcp_test, daemon=True).start()
 
     def _do_mcp_test(self):
@@ -422,7 +422,7 @@ class WeChatSummaryApp(rumps.App):
             _notify("MCP 服务", "测试失败 ❌", str(e)[:200])
 
     def _toggle_auto_refresh(self, _):
-        """切换「打开菜单时自动刷新」"""
+        """Toggle 'auto-refresh on menu open' setting."""
         current = self.config.get("auto_refresh_on_open", False)
         self.config["auto_refresh_on_open"] = not current
         save_config(self.config)
@@ -431,7 +431,7 @@ class WeChatSummaryApp(rumps.App):
         self._rebuild_settings_menu()
 
     def _toggle_group_nickname(self, _):
-        """切换「总结中显示群昵称」"""
+        """Toggle 'show group nickname in summary' setting."""
         current = self.config.get("show_group_nickname", True)
         self.config["show_group_nickname"] = not current
         save_config(self.config)
@@ -461,13 +461,13 @@ class WeChatSummaryApp(rumps.App):
         def callback(sender):
             self.config["ai_provider"] = provider_key
             save_config(self.config)
-            self.ai = None  # 下次总结时重新创建
+            self.ai = None  # Recreate on next summary
 
             provider_name = dict(AI_PROVIDERS).get(provider_key, provider_key)
             _notify("微信总结", "AI 服务已切换", f"当前使用: {provider_name}")
             print(f"[config] AI 切换为: {provider_key}")
 
-            # 如果是需要 key 的服务且没有 key，提示设置
+            # If provider needs key and none is set, prompt to configure
             if provider_key != "ollama" and not load_key("ai-api-key"):
                 self._set_api_key(None)
             else:
@@ -475,23 +475,23 @@ class WeChatSummaryApp(rumps.App):
         return callback
 
     def _bring_to_front(self):
-        """将应用提升到最前面，临时设为 Regular 应用以获取键盘输入"""
+        """Bring app to front, temporarily set as Regular app to capture keyboard input."""
         if _HAS_APPKIT:
             try:
                 app = NSApplication.sharedApplication()
-                # 确保弹窗和 Dock 显示正确的 app icon（而非 Python 火箭）
+                # Ensure dialogs and Dock show correct app icon (not Python rocket)
                 if os.path.isfile(APP_ICON_PNG):
                     ns_icon = NSImage.alloc().initWithContentsOfFile_(APP_ICON_PNG)
                     if ns_icon:
                         app.setApplicationIconImage_(ns_icon)
-                app.setActivationPolicy_(0)   # Regular → 获得键盘焦点
+                app.setActivationPolicy_(0)   # Regular -> get keyboard focus
                 app.activateIgnoringOtherApps_(True)
             except Exception:
                 pass
 
     def _input_dialog(self, title, message, default_text="",
                       ok="确定", cancel="取消", width=300):
-        """显示带正确 app icon 的输入弹窗（替代 rumps.Window）
+        """Show input dialog with correct app icon (replaces rumps.Window).
 
         Returns:
             (clicked: bool, text: str)
@@ -523,10 +523,10 @@ class WeChatSummaryApp(rumps.App):
             return bool(resp.clicked), (resp.text if resp.clicked else "")
 
     def _confirm_dialog(self, title, message, ok="确定", cancel="取消"):
-        """显示带正确 app icon 的确认弹窗（无输入框）
+        """Show confirmation dialog with correct app icon (no input field).
 
         Returns:
-            bool: 是否点了确定
+            bool: whether OK was clicked
         """
         if _HAS_APPKIT:
             alert = NSAlert.alloc().init()
@@ -547,7 +547,7 @@ class WeChatSummaryApp(rumps.App):
             return bool(window.run().clicked)
 
     def _release_front(self):
-        """恢复为菜单栏应用（隐藏 Dock 图标）"""
+        """Restore as menu bar app (hide Dock icon)."""
         if _HAS_APPKIT:
             try:
                 NSApplication.sharedApplication().setActivationPolicy_(1)  # Accessory
@@ -555,7 +555,7 @@ class WeChatSummaryApp(rumps.App):
                 pass
 
     def _delayed_run(self, func, *args):
-        """延迟在主线程执行，让 macOS 先关闭菜单再弹对话框（NSWindow 必须在主线程创建）"""
+        """Delay execution on main thread, let macOS close menu before showing dialog (NSWindow must be created on main thread)."""
         def _fire(timer):
             timer.stop()
             func(*args)
@@ -563,11 +563,11 @@ class WeChatSummaryApp(rumps.App):
         t.start()
 
     def _run_on_main(self, func, *args):
-        """在主线程执行（后台线程中修改菜单必须用这个）"""
+        """Execute on main thread (required for menu modifications from background threads)."""
         self._main_queue.put((func, args))
 
     def _process_main_queue(self, _):
-        """主线程定时器回调：处理后台线程提交的 UI 更新"""
+        """Main thread timer callback: process UI updates submitted by background threads."""
         while not self._main_queue.empty():
             try:
                 func, args = self._main_queue.get_nowait()
@@ -578,12 +578,12 @@ class WeChatSummaryApp(rumps.App):
                 traceback.print_exc()
 
     def _setup_menu_delegate(self, timer):
-        """安装菜单打开检测 delegate（只执行一次）"""
+        """Install menu open detection delegate (runs once)."""
         timer.stop()
         try:
             delegate = _MenuOpenDelegate.alloc().init()
             delegate.app_ref = self
-            # 通过 rumps Menu wrapper 的底层 NSMenu 安装 delegate
+            # Install delegate via rumps Menu wrapper's underlying NSMenu
             ns_menu = self.menu._menu
             if ns_menu:
                 ns_menu.setDelegate_(delegate)
@@ -593,7 +593,7 @@ class WeChatSummaryApp(rumps.App):
             print(f"[init] 菜单回调安装失败（不影响使用）: {e}")
 
     def _do_silent_refresh(self):
-        """静默刷新群聊列表（菜单打开时自动触发，不弹通知）"""
+        """Silently refresh chat list (auto-triggered on menu open, no notifications)."""
         try:
             if self.db:
                 self._run_on_main(self._rebuild_chat_menu)
@@ -603,7 +603,7 @@ class WeChatSummaryApp(rumps.App):
             traceback.print_exc()
 
     def _set_api_key(self, _):
-        """弹窗设置 API Key（延迟执行，让菜单先关闭）"""
+        """Show API Key dialog (delayed execution, let menu close first)."""
         self._delayed_run(self._show_api_key_dialog)
 
     def _show_api_key_dialog(self):
@@ -638,7 +638,7 @@ class WeChatSummaryApp(rumps.App):
             self._release_front()
 
     def _reset_bookmarks(self, _):
-        """清除所有书签（延迟执行）"""
+        """Clear all bookmarks (delayed execution)."""
         self._delayed_run(self._show_reset_bookmarks_dialog)
 
     def _show_reset_bookmarks_dialog(self):
@@ -667,7 +667,7 @@ class WeChatSummaryApp(rumps.App):
     def _open_summary_dir(self, _):
         subprocess.run(["open", SUMMARY_DIR])
 
-    # ── 初始化 ──────────────────────────────────────────
+    # ── Initialization ──────────────────────────────────────────
 
     def _init_background(self):
         print("[init] 开始后台初始化...")
@@ -714,7 +714,7 @@ class WeChatSummaryApp(rumps.App):
         print("[init] 正在刷新群聊列表...")
         self._run_on_main(self._rebuild_chat_menu)
 
-        # 检测是否有新的加密数据库缺少密钥
+        # Check if any new encrypted databases are missing keys
         try:
             missing = check_new_databases(self.config["db_dir"], keys)
             if missing:
@@ -731,10 +731,10 @@ class WeChatSummaryApp(rumps.App):
         print("[init] ✓ 初始化完成！")
         _notify("微信总结", "就绪", "点击菜单栏选择群聊进行总结")
 
-    # ── 群聊列表 + 分组（统一管理动态菜单）────────────────
+    # ── Chat list + groups (unified dynamic menu management) ────────────────
 
     def _build_chat_title(self, session):
-        """构建单个群聊的菜单标题"""
+        """Build menu title for a single group chat."""
         name = session["name"]
         username = session["username"]
         unread = session["unread"]
@@ -762,8 +762,8 @@ class WeChatSummaryApp(rumps.App):
         return title
 
     def _rebuild_chat_menu(self):
-        """重建动态菜单：未分组群聊 + 分组子菜单"""
-        # 清除旧的动态项（📎 未分组群聊 + 📂 分组）
+        """Rebuild dynamic menu: ungrouped chats + group submenus."""
+        # Clear old dynamic items (📎 ungrouped chats + 📂 groups)
         keys_to_remove = [k for k in self.menu.keys()
                           if isinstance(k, str) and (k.startswith("📎") or k.startswith("📂"))]
         for key in keys_to_remove:
@@ -775,20 +775,20 @@ class WeChatSummaryApp(rumps.App):
         sessions = self.db.get_recent_sessions(limit=200)
         group_sessions = [s for s in sessions if s["is_group"]]
 
-        # ── 过滤不活跃群聊 ──
+        # ── Filter inactive chats ──
         hide_months = self.config.get("hide_inactive_months", 1)
         if hide_months > 0:
             import time as _time
             cutoff_ts = _time.time() - hide_months * 30 * 86400
             group_sessions = [s for s in group_sessions if s["timestamp"] >= cutoff_ts]
 
-        # 找出已分组的群聊
+        # Find chats that are already in groups
         groups = load_groups()
         grouped_usernames = set()
         for grp in groups:
             grouped_usernames.update(grp["chats"])
 
-        # ── 未分组群聊（insert_after 倒序插入到 "刷新群聊列表" 后面）──
+        # ── Ungrouped chats (reverse insert_after refresh button) ──
         ungrouped = [s for s in group_sessions if s["username"] not in grouped_usernames]
 
         if ungrouped:
@@ -801,14 +801,14 @@ class WeChatSummaryApp(rumps.App):
         elif not groups:
             self.menu.insert_after("🔍 关键词搜索", rumps.MenuItem("📎 (暂无群聊)"))
 
-        # ── 分组（insert_before 正序插入到 "📋 最近总结" 前面）──
+        # ── Groups (insert_before in order before recent summaries) ──
         if groups:
             self._load_contacts_if_needed()
             for grp in groups:
                 grp_menu = self._build_group_submenu(grp)
                 self.menu.insert_before("📋 最近总结", grp_menu)
 
-        # 新建分组（始终显示在分组区域最下方）
+        # New group button (always at the bottom of group area)
         self.menu.insert_before("📋 最近总结",
                                 rumps.MenuItem("📂 ✨ 新建分组…", callback=self._create_group))
 
@@ -836,7 +836,7 @@ class WeChatSummaryApp(rumps.App):
         self._bring_to_front()
         try:
             if not _HAS_APPKIT:
-                # 降级：用 _input_dialog 单输入框
+                # Fallback: use _input_dialog with single input field
                 clicked, text = self._input_dialog(
                     "自定义总结",
                     f"群聊：{group_name}\n\n输入条数（如 50）或分钟数加m（如 30m）",
@@ -862,13 +862,13 @@ class WeChatSummaryApp(rumps.App):
                         ).start()
                 return
 
-            # ── PyObjC 双输入框 ──
+            # ── PyObjC dual input fields ──
             alert = NSAlert.alloc().init()
             alert.setMessageText_("自定义总结")
             alert.setInformativeText_(
                 f"群聊：{group_name}\n以下两项填一项即可（不要都填）"
             )
-            # 设置弹窗图标
+            # Set dialog icon
             if os.path.isfile(APP_ICON_PNG):
                 _icon = NSImage.alloc().initWithContentsOfFile_(APP_ICON_PNG)
                 if _icon:
@@ -950,7 +950,7 @@ class WeChatSummaryApp(rumps.App):
         finally:
             self._release_front()
 
-    # ── 总结逻辑 ────────────────────────────────────────
+    # ── Summary logic ────────────────────────────────────────
 
     def _summarize_group(self, session, custom_count=None, custom_minutes=None):
         self._summarizing = True
@@ -1005,13 +1005,13 @@ class WeChatSummaryApp(rumps.App):
 
             summary = self.ai.summarize(prompt)
 
-            # 更新书签
+            # Update bookmark
             set_bookmark(username, messages[-1]["timestamp"])
 
-            # 保存到文件
+            # Save to file
             summary_file = self._save_summary(group_name, summary, msg_count, start_time, end_time)
 
-            # 更新菜单
+            # Update menu
             self._last_summary = {
                 "group": group_name,
                 "text": summary,
@@ -1024,7 +1024,7 @@ class WeChatSummaryApp(rumps.App):
             _notify("微信总结", f"✅ {group_name}", f"{msg_count}条消息已总结")
             print(f"[summary] ✓ {group_name} 总结完成")
 
-            # 自动打开总结文件
+            # Auto-open summary file
             subprocess.run(["open", summary_file])
 
             self._set_status(ICON_DONE)
@@ -1054,16 +1054,16 @@ class WeChatSummaryApp(rumps.App):
             f.write(header + summary)
         return filepath
 
-    # ── 总结菜单显示 ──────────────────────────────────
+    # ── Summary menu display ──────────────────────────────────
 
     def _refresh_menu_after_summary(self):
-        """总结完成后刷新所有菜单（必须在主线程调用）"""
+        """Refresh all menus after summary completes (must be called on main thread)."""
         self._rebuild_chat_menu()
         self._update_latest_summary()
         self._rebuild_summary_history()
 
     def _update_latest_summary(self):
-        """更新最新总结的显示（在「📋 最近总结」上方）"""
+        """Update latest summary display (above recent summaries menu)."""
         for key in list(self.menu.keys()):
             if isinstance(key, str) and key.startswith("📝"):
                 del self.menu[key]
@@ -1075,7 +1075,7 @@ class WeChatSummaryApp(rumps.App):
         title = f"📝 {s['group']}（{s['msg_count']}条 · {s['time']}）"
         parent = rumps.MenuItem(title)
 
-        # 预览前几行
+        # Preview first few lines
         for line in s["text"].strip().split("\n")[:6]:
             line = line.strip()
             if not line:
@@ -1097,14 +1097,14 @@ class WeChatSummaryApp(rumps.App):
         _notify("微信总结", "已复制", "总结内容已复制到剪贴板")
 
     def _rebuild_summary_history(self):
-        """重建最近总结子菜单（排除最新的那条，因为已单独显示）"""
+        """Rebuild recent summaries submenu (excludes the latest one, already shown separately)."""
         if "📋 最近总结" in self.menu:
             del self.menu["📋 最近总结"]
 
         parent = rumps.MenuItem("📋 最近总结")
         summaries = self._get_recent_summaries(limit=15)
 
-        # 排除已在上方单独显示的最新总结
+        # Exclude the latest summary already shown separately above
         latest_file = self._last_summary.get("file") if self._last_summary else None
 
         has_items = False
@@ -1122,7 +1122,7 @@ class WeChatSummaryApp(rumps.App):
         self.menu.insert_before("⚙️ 设置", parent)
 
     def _get_recent_summaries(self, limit=15):
-        """从总结目录读取最近的总结文件列表"""
+        """Read recent summary file list from summary directory."""
         summaries = []
         if not os.path.isdir(SUMMARY_DIR):
             return summaries
@@ -1133,7 +1133,7 @@ class WeChatSummaryApp(rumps.App):
             path = os.path.join(SUMMARY_DIR, f)
             mtime = os.path.getmtime(path)
 
-            # 从文件头第二行读取群名
+            # Read group name from second line of file header
             try:
                 with open(path, encoding="utf-8") as fh:
                     fh.readline()  # skip "===="
@@ -1153,10 +1153,10 @@ class WeChatSummaryApp(rumps.App):
             subprocess.run(["open", filepath])
         return callback
 
-    # ── 分组管理 ────────────────────────────────────────
+    # ── Group management ────────────────────────────────────────
 
     def _build_group_submenu(self, grp):
-        """构建单个分组的子菜单"""
+        """Build submenu for a single group."""
         grp_name = grp["name"]
         chat_count = len(grp["chats"])
 
@@ -1202,18 +1202,18 @@ class WeChatSummaryApp(rumps.App):
         return grp_menu
 
     def _load_contacts_if_needed(self):
-        """确保联系人已加载"""
+        """Ensure contacts are loaded."""
         if self.db:
             self.db._load_contacts()
 
     def _get_chat_display_name(self, username):
-        """获取群聊显示名称"""
+        """Get display name for a group chat."""
         if self.db and self.db._contacts:
             return self.db._contacts.get(username, username)
         return username
 
     def _create_group(self, _):
-        """新建分组（延迟弹窗）"""
+        """Create new group (delayed dialog)."""
         self._delayed_run(self._show_create_group_dialog)
 
     def _show_create_group_dialog(self):
@@ -1264,17 +1264,17 @@ class WeChatSummaryApp(rumps.App):
             _notify("微信总结", "未初始化", "请先确保微信已登录")
             return
 
-        # 从 contact.db 获取所有群聊（不受 session 数量限制）
+        # Get all group chats from contact.db (not limited by session count)
         group_sessions = self.db.get_groups()
 
         if not group_sessions:
             _notify("微信总结", "暂无群聊", "请先刷新群聊列表")
             return
 
-        # 已在该分组中的群聊
+        # Chats already in this group
         existing = set(get_group_chats(group_name))
 
-        # 构建选择列表（排除已添加的）
+        # Build selection list (exclude already added)
         available = [s for s in group_sessions if s["username"] not in existing]
         if not available:
             _notify("微信总结", "无可添加群聊", "所有群聊已在该分组中")
@@ -1328,7 +1328,7 @@ class WeChatSummaryApp(rumps.App):
         return callback
 
     def _batch_summarize(self, group_name):
-        """批量总结一个分组中的所有群聊"""
+        """Batch summarize all chats in a group."""
         self._summarizing = True
         self._set_status(ICON_LOADING)
 
@@ -1397,19 +1397,19 @@ class WeChatSummaryApp(rumps.App):
             prompt = self.ai.build_batch_prompt(group_name, groups_data)
             summary = self.ai.summarize(prompt)
 
-            # 更新所有有消息的群的书签
+            # Update bookmarks for all chats with messages
             for g in groups_data:
                 if g["last_msg_ts"] > 0:
                     set_bookmark(g["username"], g["last_msg_ts"])
 
-            # 记录分组总结时间
+            # Record group summary time
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
             set_group_summary_time(group_name, now_str)
 
-            # 保存总结
+            # Save summary
             summary_file = self._save_batch_summary(group_name, summary, groups_data, total_msgs)
 
-            # 更新菜单
+            # Update menu
             self._last_summary = {
                 "group": f"📂 {group_name}",
                 "text": summary,
@@ -1422,7 +1422,7 @@ class WeChatSummaryApp(rumps.App):
             _notify("微信总结", f"✅ {group_name}", f"{len(groups_data)}个群 · {total_msgs}条消息已总结")
             print(f"[batch] ✓ 分组「{group_name}」总结完成")
 
-            # 自动打开总结文件
+            # Auto-open summary file
             subprocess.run(["open", summary_file])
 
             self._set_status(ICON_DONE)
@@ -1435,7 +1435,7 @@ class WeChatSummaryApp(rumps.App):
             self._summarizing = False
 
     def _save_batch_summary(self, group_name, summary, groups_data, total_msgs):
-        """保存批量总结"""
+        """Save batch summary."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in group_name)
         filename = f"batch_{safe_name}_{timestamp}.txt"
@@ -1455,10 +1455,10 @@ class WeChatSummaryApp(rumps.App):
             f.write(header + summary)
         return filepath
 
-    # ── 关键词搜索 ──────────────────────────────────────
+    # ── Keyword search ──────────────────────────────────────
 
     def _on_search_click(self, _):
-        """点击搜索菜单项（延迟弹窗，让菜单先关闭）"""
+        """Search menu item clicked (delayed dialog, let menu close first)."""
         if not self.db:
             _notify("微信总结", "未初始化", "请先确保微信已登录")
             return
@@ -1468,11 +1468,11 @@ class WeChatSummaryApp(rumps.App):
         self._delayed_run(self._show_search_dialog)
 
     def _show_search_dialog(self):
-        """弹出关键词搜索对话框"""
+        """Show keyword search dialog."""
         if not self.db:
             return
 
-        # 从 contact.db 获取所有群聊（不受 session 数量限制）
+        # Get all group chats from contact.db (not limited by session count)
         group_sessions = self.db.get_groups()
 
         if not group_sessions:
@@ -1482,11 +1482,11 @@ class WeChatSummaryApp(rumps.App):
         self._bring_to_front()
         try:
             if not _HAS_APPKIT:
-                # 降级：单输入框
+                # Fallback: single input field
                 self._show_search_dialog_fallback(group_sessions)
                 return
 
-            # ── PyObjC 多输入框对话框 ──
+            # ── PyObjC multi-input dialog ──
             alert = NSAlert.alloc().init()
             if os.path.isfile(APP_ICON_PNG):
                 _icon = NSImage.alloc().initWithContentsOfFile_(APP_ICON_PNG)
@@ -1497,16 +1497,16 @@ class WeChatSummaryApp(rumps.App):
             alert.addButtonWithTitle_("开始搜索")
             alert.addButtonWithTitle_("取消")
 
-            # 构建群聊列表文字
+            # Build group chat list text
             group_lines = []
             for i, s in enumerate(group_sessions, 1):
                 group_lines.append(f"{i}. {s['name']}")
             groups_text = "\n".join(group_lines)
 
-            # 自定义视图：输入框 + 可滚动群聊列表
+            # Custom view: input fields + scrollable chat list
             view = NSView.alloc().initWithFrame_(((0, 0), (380, 310)))
 
-            # 行 4 (y=283): 关键词
+            # Row 4 (y=283): Keywords
             lbl_kw = NSTextField.alloc().initWithFrame_(((0, 283), (80, 22)))
             lbl_kw.setStringValue_("关键词：")
             lbl_kw.setBezeled_(False)
@@ -1518,7 +1518,7 @@ class WeChatSummaryApp(rumps.App):
             field_kw.setPlaceholderString_("如 claude api")
             view.addSubview_(field_kw)
 
-            # 行 3 (y=253): 开始日期
+            # Row 3 (y=253): Start date
             lbl_start = NSTextField.alloc().initWithFrame_(((0, 253), (80, 22)))
             lbl_start.setStringValue_("开始日期：")
             lbl_start.setBezeled_(False)
@@ -1530,7 +1530,7 @@ class WeChatSummaryApp(rumps.App):
             field_start.setPlaceholderString_("如 2026-03-01")
             view.addSubview_(field_start)
 
-            # 行 2 (y=223): 结束日期
+            # Row 2 (y=223): End date
             lbl_end = NSTextField.alloc().initWithFrame_(((0, 223), (80, 22)))
             lbl_end.setStringValue_("结束日期：")
             lbl_end.setBezeled_(False)
@@ -1542,7 +1542,7 @@ class WeChatSummaryApp(rumps.App):
             field_end.setPlaceholderString_("留空 = 今天")
             view.addSubview_(field_end)
 
-            # 行 1 (y=193): 群聊范围
+            # Row 1 (y=193): Chat scope
             lbl_scope = NSTextField.alloc().initWithFrame_(((0, 193), (80, 22)))
             lbl_scope.setStringValue_("群聊范围：")
             lbl_scope.setBezeled_(False)
@@ -1555,14 +1555,14 @@ class WeChatSummaryApp(rumps.App):
             field_scope.setStringValue_("全部")
             view.addSubview_(field_scope)
 
-            # 行 0 (y=163): AI 总结复选框
+            # Row 0 (y=163): AI summary checkbox
             checkbox_ai = NSButton.alloc().initWithFrame_(((80, 163), (290, 22)))
             checkbox_ai.setButtonType_(3)  # NSSwitchButton (checkbox)
             checkbox_ai.setTitle_("用 AI 总结搜索结果")
-            checkbox_ai.setState_(0)  # 默认不勾选
+            checkbox_ai.setState_(0)  # Default unchecked
             view.addSubview_(checkbox_ai)
 
-            # 可滚动群聊列表（固定高度，不会撑满屏幕）
+            # Scrollable chat list (fixed height, won't fill the screen)
             lbl_groups = NSTextField.alloc().initWithFrame_(((0, 133), (380, 22)))
             lbl_groups.setStringValue_(f"可选群聊（共 {len(group_sessions)} 个）：")
             lbl_groups.setBezeled_(False)
@@ -1587,21 +1587,21 @@ class WeChatSummaryApp(rumps.App):
             if result != 1000:  # NSAlertFirstButtonReturn
                 return
 
-            # ── 读取输入 ──
+            # ── Read input ──
             kw_str = str(field_kw.stringValue()).strip()
             start_str = str(field_start.stringValue()).strip()
             end_str = str(field_end.stringValue()).strip()
             scope_str = str(field_scope.stringValue()).strip()
             use_ai = checkbox_ai.state() == 1
 
-            # ── 验证输入 ──
+            # ── Validate input ──
             if not kw_str:
                 _notify("微信总结", "输入错误", "请输入搜索关键词")
                 return
 
             keywords = kw_str.split()
 
-            # 解析开始日期
+            # Parse start date
             if not start_str:
                 _notify("微信总结", "输入错误", "请输入开始日期")
                 return
@@ -1611,22 +1611,22 @@ class WeChatSummaryApp(rumps.App):
                 _notify("微信总结", "日期格式错误", "请使用 YYYY-MM-DD 格式，如 2026-03-01")
                 return
 
-            # 解析结束日期
+            # Parse end date
             if end_str:
                 try:
-                    # 结束日期设为当天 23:59:59
+                    # Set end date to 23:59:59 of the day
                     end_ts = datetime.strptime(end_str, "%Y-%m-%d").timestamp() + 86399
                 except ValueError:
                     _notify("微信总结", "日期格式错误", "请使用 YYYY-MM-DD 格式，如 2026-03-09")
                     return
             else:
-                end_ts = time.time()  # 留空 = 当前时间
+                end_ts = time.time()  # Empty = current time
 
             if start_ts > end_ts:
                 _notify("微信总结", "日期错误", "开始日期不能晚于结束日期")
                 return
 
-            # 解析群聊范围
+            # Parse chat scope
             if not scope_str or scope_str == "全部":
                 search_usernames = [s["username"] for s in group_sessions]
             else:
@@ -1642,7 +1642,7 @@ class WeChatSummaryApp(rumps.App):
                     _notify("微信总结", "输入错误", "未选择有效群聊，请输入「全部」或群聊序号")
                     return
 
-            # ── 启动后台搜索 ──
+            # ── Start background search ──
             print(f"[搜索] 关键词={keywords}, 群聊数={len(search_usernames)}, "
                   f"时间={start_str}~{end_str or '今天'}, AI={use_ai}")
             threading.Thread(
@@ -1658,7 +1658,7 @@ class WeChatSummaryApp(rumps.App):
             self._release_front()
 
     def _show_search_dialog_fallback(self, group_sessions):
-        """无 AppKit 时的降级搜索对话框"""
+        """Fallback search dialog when AppKit is unavailable."""
         clicked, text = self._input_dialog(
             "🔍 关键词搜索",
             "格式：关键词|开始日期|结束日期\n"
@@ -1705,7 +1705,7 @@ class WeChatSummaryApp(rumps.App):
         ).start()
 
     def _do_search(self, keywords, kw_str, usernames, start_ts, end_ts, use_ai):
-        """后台执行关键词搜索（纯只读操作，不修改任何书签和数据）"""
+        """Execute keyword search in background (read-only, does not modify any bookmarks or data)."""
         self._summarizing = True
         self._set_status(ICON_LOADING)
 
@@ -1716,7 +1716,7 @@ class WeChatSummaryApp(rumps.App):
             print(f"[搜索] 搜索关键词：{kw_str}，范围：{start_display}~{end_display}，"
                   f"群聊数：{len(usernames)}，AI总结：{use_ai}")
 
-            # 获取数据覆盖范围（告知用户哪些群有多久的数据）
+            # Get data coverage range (inform user which chats have how much data)
             coverage = self.db.get_fts_coverage(usernames)
             if coverage:
                 for uname in usernames:
@@ -1727,13 +1727,13 @@ class WeChatSummaryApp(rumps.App):
                         gname = self.db._contacts.get(uname, uname) if self.db._contacts else uname
                         print(f"[搜索]   {gname}: 数据范围 {e} ~ {l} ({cov['count']}条)")
 
-            # 执行搜索（优先使用 FTS 全文索引，覆盖全部历史数据）
+            # Execute search (prefer FTS full-text index, covers all historical data)
             results = self.db.search_messages(keywords, usernames, start_ts, end_ts)
 
             total_count = sum(len(msgs) for msgs in results.values())
 
             if total_count == 0:
-                # 构建数据覆盖说明
+                # Build data coverage description
                 coverage_note = ""
                 if coverage:
                     lines = []
@@ -1756,7 +1756,7 @@ class WeChatSummaryApp(rumps.App):
             print(f"[搜索] 命中 {total_count} 条消息，涉及 {len(results)} 个群")
 
             if use_ai:
-                # AI 总结模式
+                # AI summary mode
                 if not self.ai:
                     try:
                         self.ai = create_provider(self.config)
@@ -1773,13 +1773,13 @@ class WeChatSummaryApp(rumps.App):
                     ai_summary=summary
                 )
             else:
-                # 原文模式
+                # Raw text mode
                 filepath = self._save_search_result(
                     kw_str, results, total_count, start_display, end_display,
                     ai_summary=None
                 )
 
-            # 更新最新总结显示
+            # Update latest summary display
             self._last_summary = {
                 "group": f"🔍 搜索：{kw_str}",
                 "text": summary if use_ai else f"搜索「{kw_str}」命中 {total_count} 条消息",
@@ -1801,12 +1801,12 @@ class WeChatSummaryApp(rumps.App):
             self._set_status(ICON_ERROR)
         finally:
             self._summarizing = False
-            # 安全网：确保图标不会卡在 ⏳
+            # Safety net: ensure icon doesn't get stuck on ⏳
             if self.title == ICON_LOADING:
                 self._set_status(ICON_NORMAL)
 
     def _save_search_result(self, kw_str, results, total_count, start_display, end_display, ai_summary=None):
-        """保存搜索结果到文件（不修改任何书签）"""
+        """Save search results to file (does not modify any bookmarks)."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_kw = "".join(c if c.isalnum() or c in "._-" else "_" for c in kw_str)
 
@@ -1820,7 +1820,7 @@ class WeChatSummaryApp(rumps.App):
         group_count = len(results)
         mode_label = "AI总结" if ai_summary else "原文"
 
-        # 计算各群实际数据范围
+        # Calculate actual data range for each chat
         actual_ranges = []
         for username, messages in results.items():
             if messages:
@@ -1846,7 +1846,7 @@ class WeChatSummaryApp(rumps.App):
         if ai_summary:
             content = header + ai_summary
         else:
-            # 原文模式：按群分组展示
+            # Raw text mode: display grouped by chat
             parts = []
             for username, messages in results.items():
                 group_name = messages[0]["group_name"] if messages else username
@@ -1864,7 +1864,7 @@ class WeChatSummaryApp(rumps.App):
             f.write(content)
         return filepath
 
-    # ── 菜单栏按钮 ─────────────────────────────────────
+    # ── Menu bar buttons ─────────────────────────────────────
 
     @rumps.clicked("刷新群聊列表")
     def refresh_groups(self, _):

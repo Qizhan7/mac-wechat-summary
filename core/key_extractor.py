@@ -1,6 +1,4 @@
-"""
-密钥提取 - 编译并运行 C 扫描器从微信进程内存提取数据库密钥
-"""
+"""Key extraction - compile and run C scanner to extract DB keys from WeChat process memory."""
 import json
 import os
 import shlex
@@ -37,7 +35,7 @@ def _first_pid(args):
 
 
 def get_wechat_pid():
-    """获取可用于扫描密钥的微信主进程 PID"""
+    """Get WeChat main process PID for key scanning."""
     for name in WECHAT_PROCESS_NAMES:
         pid = _first_pid(["pgrep", "-x", name])
         if pid:
@@ -52,12 +50,12 @@ def get_wechat_pid():
 
 
 def is_wechat_running():
-    """检查微信是否在运行"""
+    """Check if WeChat is running."""
     return get_wechat_pid() is not None
 
 
 def get_wechat_app_path():
-    """获取 WeChat.app 路径，优先系统已安装的位置"""
+    """Get WeChat.app path, preferring system-installed location."""
     try:
         result = subprocess.run(
             ["osascript", "-e", 'POSIX path of (path to application "WeChat")'],
@@ -76,7 +74,7 @@ def get_wechat_app_path():
 
 
 def is_wechat_signed():
-    """检查微信是否已重签名（去掉 hardened runtime）"""
+    """Check if WeChat has been re-signed (hardened runtime removed)."""
     app_path = get_wechat_app_path()
     if not app_path:
         return False
@@ -89,18 +87,18 @@ def is_wechat_signed():
         if result2.returncode != 0:
             return False
         flags = result2.stderr
-        # hardened runtime 会在 flags 中出现 "runtime"
+        # Hardened runtime shows "runtime" in flags
         return "runtime" not in flags.lower()
     except Exception:
         return False
 
 
 def compile_scanner():
-    """编译 C 密钥扫描器"""
+    """Compile C key scanner."""
     os.makedirs(DATA_DIR, exist_ok=True)
 
     if os.path.exists(C_BINARY):
-        # 检查是否需要重新编译
+        # Check if recompilation needed
         if os.path.getmtime(C_BINARY) >= os.path.getmtime(C_SOURCE):
             return True
 
@@ -119,10 +117,10 @@ def compile_scanner():
 
 
 def extract_keys():
-    """运行 C 扫描器提取密钥，需要 sudo 权限
+    """Run C scanner to extract keys, requires sudo.
 
     Returns:
-        dict: {db_rel_path: {"enc_key": hex_string}, ...} 或 None
+        dict: {db_rel_path: {"enc_key": hex_string}, ...} or None.
     """
     if not compile_scanner():
         return None
@@ -133,7 +131,7 @@ def extract_keys():
     home_dir = os.path.expanduser("~")
     db_dir = load_config().get("db_dir", "")
 
-    # C 扫描器输出到当前目录的 all_keys.json，我们 cd 到 DATA_DIR
+    # C scanner outputs all_keys.json to cwd, so cd to DATA_DIR
     try:
         result = subprocess.run(
             ["sudo", "-n", C_BINARY, str(pid), home_dir, db_dir],
@@ -148,7 +146,7 @@ def extract_keys():
             f.write(result.stderr)
 
         if result.returncode != 0:
-            # 尝试带交互的 sudo（通过 osascript 弹窗）
+            # Try interactive sudo via osascript dialog
             shell_command = (
                 f"cd {shlex.quote(DATA_DIR)} && "
                 f"{shlex.quote(C_BINARY)} {pid} {shlex.quote(home_dir)} {shlex.quote(db_dir)}"
@@ -172,7 +170,7 @@ def extract_keys():
     except Exception:
         return None
 
-    # 读取输出的 keys 文件
+    # Read output keys file
     keys_path = os.path.join(DATA_DIR, "all_keys.json")
     if not os.path.exists(keys_path):
         return None
@@ -180,13 +178,13 @@ def extract_keys():
     try:
         with open(keys_path) as f:
             keys = json.load(f)
-        # 过滤掉元数据字段
+        # Filter out metadata fields
         keys = {k: v for k, v in keys.items() if not k.startswith("_")}
     except (json.JSONDecodeError, OSError):
         return None
 
-    # ── 如果 C 扫描器因权限问题没能匹配到 DB，在 Python 端重新匹配 ──
-    # Python 以当前用户身份运行，可以正常读取 sandbox 文件
+    # If C scanner couldn't match DBs due to permission issues, re-match in Python
+    # Python runs as current user and can read sandbox files
     if not keys and db_dir and os.path.isdir(db_dir):
         keys = _rematch_keys_from_log(db_dir)
 
@@ -194,7 +192,7 @@ def extract_keys():
 
 
 def _parse_raw_keys_from_log(log_path=EXTRACT_LOG):
-    """从 extract_keys.log 解析 C 扫描器找到的所有 key+salt 对"""
+    """Parse all key+salt pairs found by C scanner from extract_keys.log."""
     raw_keys = []  # [(key_hex, salt_hex), ...]
     if not os.path.exists(log_path):
         return raw_keys
@@ -222,9 +220,9 @@ def _parse_raw_keys_from_log(log_path=EXTRACT_LOG):
 
 
 def _rematch_keys_from_log(db_dir):
-    """用 Python（用户权限）读取 db 文件头，与扫描器日志中的 key+salt 匹配
+    """Read db file headers with Python (user privileges) and match against key+salt from scanner log.
 
-    解决 root 无法读取 macOS sandbox 文件的问题。
+    Solves the issue where root cannot read macOS sandbox files.
     """
     raw_keys = _parse_raw_keys_from_log()
     if not raw_keys:
@@ -232,12 +230,12 @@ def _rematch_keys_from_log(db_dir):
 
     print(f"[key_extractor] 从日志解析到 {len(raw_keys)} 个 key+salt 对，用 Python 重新匹配...")
 
-    # 建立 salt → key_hex 索引
+    # Build salt -> key_hex index
     salt_to_key = {}
     for key_hex, salt_hex in raw_keys:
         salt_to_key[salt_hex] = key_hex
 
-    # 遍历 db_dir 下所有 .db 文件，读取 salt
+    # Walk all .db files under db_dir, read salt
     matched = {}
     for root, _dirs, files in os.walk(db_dir):
         for fname in files:
@@ -250,7 +248,7 @@ def _rematch_keys_from_log(db_dir):
                     header = f.read(16)
                 if len(header) < 16:
                     continue
-                # 未加密 SQLite，跳过
+                # Unencrypted SQLite, skip
                 if header[:15] == b"SQLite format 3":
                     continue
                 file_salt = header.hex().lower()
@@ -261,7 +259,7 @@ def _rematch_keys_from_log(db_dir):
                 continue
 
     if matched:
-        # 保存到 all_keys.json
+        # Save to all_keys.json
         try:
             with open(KEYS_FILE, "w") as f:
                 json.dump(matched, f, indent=2)
@@ -273,7 +271,7 @@ def _rematch_keys_from_log(db_dir):
 
 
 def get_cached_keys():
-    """获取缓存的密钥（不重新提取）"""
+    """Get cached keys (without re-extraction)."""
     if not os.path.exists(KEYS_FILE):
         return None
     try:
@@ -286,17 +284,18 @@ def get_cached_keys():
 
 
 def check_new_databases(db_dir, keys):
-    """检测 db_dir 下是否有新的加密数据库缺少密钥
+    """Detect new encrypted databases under db_dir that are missing keys.
 
-    扫描 db_storage 目录所有 .db 文件，读头 16 字节判断是否加密，
-    与已有 keys 对比，返回缺少密钥的列表。
+    Scans db_storage directory for all .db files, reads first 16 bytes to
+    check if encrypted, compares against existing keys, returns list of
+    databases missing keys.
 
     Args:
-        db_dir: db_storage 目录路径
-        keys: 当前已有的密钥字典 {rel_path: {"enc_key": ...}}
+        db_dir: db_storage directory path.
+        keys: Current key dict {rel_path: {"enc_key": ...}}.
 
     Returns:
-        list[str]: 缺少密钥的数据库相对路径
+        list[str]: Relative paths of databases missing keys.
     """
     missing = []
     normalized_keys = {k.replace("\\", "/") for k in keys}
@@ -307,13 +306,13 @@ def check_new_databases(db_dir, keys):
             full = os.path.join(root, fname)
             rel = os.path.relpath(full, db_dir).replace("\\", "/")
             if rel in normalized_keys:
-                continue  # 已有密钥
-            # 读头 16 字节判断是否加密
+                continue  # Already has key
+            # Read first 16 bytes to check if encrypted
             try:
                 with open(full, "rb") as f:
                     header = f.read(16)
                 if len(header) < 16 or header[:15] == b"SQLite format 3":
-                    continue  # 太小或未加密，跳过
+                    continue  # Too small or unencrypted, skip
                 missing.append(rel)
             except OSError:
                 continue

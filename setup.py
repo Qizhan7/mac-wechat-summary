@@ -37,5 +37,6 @@ setup(
         "anthropic",
         "openai",
         "requests",
+        "mcp[cli]",
     ],
 )

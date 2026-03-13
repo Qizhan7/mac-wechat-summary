@@ -46,17 +46,24 @@ macOS 菜单栏应用，一键总结微信群聊消息。
 ├── app.py              # 主程序入口（菜单栏应用）
 ├── core/
 │   ├── wechat_db.py    # 微信数据库解密与消息读取
-│   └── key_extractor.py # 密钥提取管理
+│   ├── decryptor.py    # SQLCipher 数据库解密
+│   ├── key_extractor.py # 密钥提取管理
+│   ├── config.py       # 配置管理
+│   ├── keychain.py     # macOS 钥匙串存取
+│   ├── bookmark.py     # 阅读书签
+│   ├── chat_groups.py  # 分组管理
+│   └── sender.py       # 消息发送
 ├── ai/
-│   └── ai_service.py   # 多 AI 服务统一接口
-├── ui/
-│   └── dialogs.py      # GUI 对话框
+│   ├── base.py         # AI 提供者基类与 Prompt
+│   ├── factory.py      # AI 提供者工厂
+│   ├── claude_provider.py
+│   ├── openai_provider.py
+│   └── ollama_provider.py
 ├── c_src/
 │   └── find_keys_macos.c # 内存扫描 C 程序
 ├── mcp_server.py       # MCP Server（供 Claude 调用）
 ├── 启动.command         # 一键启动脚本
-├── first_run.sh        # 首次运行环境配置
-├── setup.py            # 依赖安装脚本
+├── setup.py            # 打包配置（可选）
 └── requirements.txt    # Python 依赖
 ```
 

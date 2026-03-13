@@ -1,6 +1,4 @@
-"""
-书签系统 - 记录每个群聊上次阅读到的位置 + 上次总结时间
-"""
+"""Bookmark system - track last-read position and last summary time per chat."""
 import json
 import os
 import time
@@ -12,7 +10,7 @@ BOOKMARKS_FILE = os.path.join(DATA_DIR, "bookmarks.json")
 
 
 def load_bookmarks():
-    """加载所有书签"""
+    """Load all bookmarks."""
     if not os.path.exists(BOOKMARKS_FILE):
         return {}
     try:
@@ -23,46 +21,46 @@ def load_bookmarks():
 
 
 def save_bookmarks(bookmarks):
-    """保存所有书签"""
+    """Save all bookmarks."""
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(BOOKMARKS_FILE, "w") as f:
         json.dump(bookmarks, f, indent=2, ensure_ascii=False)
 
 
 def _get_entry(username):
-    """获取某个群的书签条目（兼容旧格式）"""
+    """Get bookmark entry for a chat (compatible with legacy format)."""
     bookmarks = load_bookmarks()
     entry = bookmarks.get(username)
     if entry is None:
         return {"msg_ts": 0, "summary_time": ""}
-    # 旧格式兼容：直接是 int 时间戳
+    # Legacy format: raw int timestamp
     if isinstance(entry, (int, float)):
         return {"msg_ts": int(entry), "summary_time": ""}
     return entry
 
 
 def get_bookmark(username):
-    """获取某个群的上次阅读时间戳"""
+    """Get last-read timestamp for a chat."""
     return _get_entry(username).get("msg_ts", 0)
 
 
 def get_summary_time(username):
-    """获取某个群的上次总结时间（人类可读字符串）"""
+    """Get last summary time for a chat (human-readable string)."""
     return _get_entry(username).get("summary_time", "")
 
 
 def clear_all_bookmarks():
-    """清除所有书签，让所有群聊从头开始总结"""
+    """Clear all bookmarks, reset all chats to summarize from scratch."""
     save_bookmarks({})
 
 
 def set_bookmark(username, timestamp=None):
-    """设置某个群的阅读位置 + 记录总结时间"""
+    """Set read position for a chat and record summary time."""
     if timestamp is None:
         timestamp = int(time.time())
     bookmarks = load_bookmarks()
 
-    # 兼容旧格式
+    # Handle legacy format
     old = bookmarks.get(username)
     if isinstance(old, (int, float)):
         old = {"msg_ts": int(old), "summary_time": ""}

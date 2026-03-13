@@ -1,6 +1,4 @@
-"""
-群聊分组 - 将多个群聊归类到自定义分组，支持按组批量总结
-"""
+"""Chat groups - organize chats into custom groups for batch summarization."""
 import json
 import os
 
@@ -10,7 +8,7 @@ GROUPS_FILE = os.path.join(DATA_DIR, "chat_groups.json")
 
 
 def load_groups():
-    """加载所有分组
+    """Load all groups.
 
     Returns:
         list[dict]: [{"name": "购物群", "chats": ["xxx@chatroom", ...]}, ...]
@@ -26,20 +24,20 @@ def load_groups():
 
 
 def save_groups(groups):
-    """保存所有分组"""
+    """Save all groups."""
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(GROUPS_FILE, "w") as f:
         json.dump({"groups": groups}, f, indent=2, ensure_ascii=False)
 
 
 def create_group(name):
-    """创建新分组
+    """Create a new group.
 
     Args:
-        name: 分组名称
+        name: Group name.
 
     Returns:
-        bool: 是否成功（名称重复则失败）
+        bool: True if created, False if name already exists.
     """
     groups = load_groups()
     if any(g["name"] == name for g in groups):
@@ -50,14 +48,14 @@ def create_group(name):
 
 
 def delete_group(name):
-    """删除分组"""
+    """Delete a group."""
     groups = load_groups()
     groups = [g for g in groups if g["name"] != name]
     save_groups(groups)
 
 
 def rename_group(old_name, new_name):
-    """重命名分组"""
+    """Rename a group."""
     groups = load_groups()
     for g in groups:
         if g["name"] == old_name:
@@ -68,14 +66,14 @@ def rename_group(old_name, new_name):
 
 
 def add_chat_to_group(group_name, chat_username):
-    """将群聊添加到分组
+    """Add a chat to a group.
 
     Args:
-        group_name: 分组名称
-        chat_username: 群聊的 username (xxx@chatroom)
+        group_name: Group name.
+        chat_username: Chat username (xxx@chatroom).
 
     Returns:
-        bool: 是否成功
+        bool: True if the group exists, False otherwise.
     """
     groups = load_groups()
     for g in groups:
@@ -88,7 +86,7 @@ def add_chat_to_group(group_name, chat_username):
 
 
 def remove_chat_from_group(group_name, chat_username):
-    """将群聊从分组中移除"""
+    """Remove a chat from a group."""
     groups = load_groups()
     for g in groups:
         if g["name"] == group_name:
@@ -100,7 +98,7 @@ def remove_chat_from_group(group_name, chat_username):
 
 
 def get_group_chats(group_name):
-    """获取分组中的所有群聊 username 列表"""
+    """Get all chat usernames in a group."""
     groups = load_groups()
     for g in groups:
         if g["name"] == group_name:
@@ -109,7 +107,7 @@ def get_group_chats(group_name):
 
 
 def get_chat_group(chat_username):
-    """查找群聊所在的分组名称，不在任何分组返回 None"""
+    """Find which group a chat belongs to, returns None if not in any group."""
     groups = load_groups()
     for g in groups:
         if chat_username in g["chats"]:
@@ -118,7 +116,7 @@ def get_chat_group(chat_username):
 
 
 def set_group_summary_time(group_name, summary_time_str):
-    """设置分组的上次总结时间"""
+    """Set last summary time for a group."""
     groups = load_groups()
     for g in groups:
         if g["name"] == group_name:
@@ -128,7 +126,7 @@ def set_group_summary_time(group_name, summary_time_str):
 
 
 def get_group_summary_time(group_name):
-    """获取分组的上次总结时间"""
+    """Get last summary time for a group."""
     groups = load_groups()
     for g in groups:
         if g["name"] == group_name:

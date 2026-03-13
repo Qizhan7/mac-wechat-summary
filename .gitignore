@@ -22,3 +22,12 @@ build/
 
 # Sensitive
 *.key
+
+# V2 experiments (not part of the project)
+capture_aes_key.py
+find_image_key_mac.py
+monitor_v2_key.py
+scan_v2_key.c
+scan_v2_key
+scan_v2_key/
+test_v2_keys.py

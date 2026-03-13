@@ -1,6 +1,4 @@
-"""
-配置管理 - 管理应用配置和微信数据路径检测
-"""
+"""Configuration management - app config and WeChat data path detection."""
 import json
 import os
 
@@ -13,8 +11,8 @@ DEFAULT_CONFIG = {
     "db_dir": "",
     "keys_file": os.path.join(DATA_DIR, "all_keys.json"),
     "decrypted_dir": os.path.join(DATA_DIR, "decrypted"),
-    "ai_provider": "qwen",  # 可选: qwen, ollama, deepseek, claude, openai, custom
-    "ai_model": "",          # 留空则用默认模型; API Key 存在 macOS 钥匙串中
+    "ai_provider": "qwen",  # Options: qwen, ollama, deepseek, claude, openai, custom
+    "ai_model": "",          # Empty uses default model; API key stored in macOS Keychain
     "ollama_url": "http://localhost:11434",
     "ollama_model": "qwen3:8b",
     "auto_refresh_on_open": False,
@@ -74,7 +72,7 @@ def _load_saved_config():
 
 
 def auto_detect_db_dir():
-    """自动检测 macOS 微信数据库路径"""
+    """Auto-detect macOS WeChat database path."""
     bases = [
         os.path.expanduser(
             "~/Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files"
@@ -126,12 +124,12 @@ def auto_detect_db_dir():
 
 
 def load_config():
-    """加载配置，首次运行时自动检测"""
+    """Load config, auto-detect on first run."""
     os.makedirs(DATA_DIR, exist_ok=True)
 
     cfg = _load_saved_config()
 
-    # 自动检测 db_dir
+    # Auto-detect db_dir
     if not cfg["db_dir"] or not os.path.isdir(cfg["db_dir"]):
         detected = auto_detect_db_dir()
         if detected:
@@ -142,7 +140,7 @@ def load_config():
 
 
 def save_config(cfg):
-    """保存配置"""
+    """Save config."""
     os.makedirs(DATA_DIR, exist_ok=True)
     normalized = _sanitize_config(cfg)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:

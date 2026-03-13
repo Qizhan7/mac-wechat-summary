@@ -1,6 +1,6 @@
 """
-微信数据库查询 - 联系人、群聊、消息读取
-基于 wechat-decrypt 项目的 mcp_server.py 查询逻辑
+WeChat database queries - contacts, group chats, and message reading.
+Based on the query logic from the wechat-decrypt project's mcp_server.py.
 """
 import hashlib
 import json
@@ -16,102 +16,106 @@ from .decryptor import decrypt_database, decrypt_wal
 
 _zstd_dctx = zstd.ZstdDecompressor()
 
-# 用于从 XML 消息中提取 <title> 的正则
+# Regex to extract <title> from XML messages
 _RE_TITLE = re.compile(r"<title>(.*?)</title>", re.DOTALL)
 
 
 def _clean_msg_text(text):
-    """清理微信消息文本，处理 XML 格式的特殊消息
+    """Clean WeChat message text, handle XML-formatted special messages.
 
-    将拍一拍、引用回复、图片、表情等 XML 消息转为可读文本。
-    纯文本消息原样返回。
+    Converts pat-pat, quoted replies, images, stickers, etc. from XML to readable text.
+    Plain text messages are returned as-is.
 
     Returns:
-        str | None: 清理后的文本，None 表示应跳过此消息
+        str | None: Cleaned text, or None if the message should be skipped.
     """
     if not text:
         return None
 
     stripped = text.strip()
 
-    # 纯文本消息：不以 < 开头的直接返回
+    # Plain text: return directly if not starting with <
     if not stripped.startswith("<"):
         return text
 
-    # ── 系统消息 (sysmsg) → 跳过 ──
+    # ── System messages (sysmsg) → skip ──
     if "<sysmsg" in stripped:
         return None
 
-    # ── appmsg：引用回复、链接、文件、拍一拍 ──
+    # ── appmsg: quoted replies, links, files, pat ──
     if "<appmsg" in stripped:
         m = _RE_TITLE.search(stripped)
         if m:
             title = m.group(1).strip()
             if not title:
                 return None
-            # 拍一拍：title 带有 "拍了拍"
+            # Pat-pat: title contains "拍了拍"
             if "拍了拍" in title:
                 return None
-            # 引用回复 (type=57)：提取 title 作为回复内容
+            # Quoted reply (type=57): extract title as reply content
             if "<type>57</type>" in stripped:
                 return f"[回复] {title}"
-            # 文件 (type=6)
+            # File (type=6)
             if "<type>6</type>" in stripped:
                 return f"[文件] {title}"
-            # 链接/文章 (type=5 或其他)
+            # Link/article (type=5 or other)
             return f"[链接] {title}"
         return None
 
-    # ── 图片 ──
+    # ── Image ──
     if "<img " in stripped or "<img>" in stripped:
         return "[图片]"
 
-    # ── 表情 ──
+    # ── Sticker ──
     if "<emoji " in stripped or "<emoji>" in stripped:
         return "[表情]"
 
-    # ── 语音 ──
+    # ── Voice ──
     if "<voicemsg " in stripped:
         return "[语音]"
 
-    # ── 视频 ──
+    # ── Video ──
     if "<videomsg " in stripped:
         return "[视频]"
 
-    # ── 其他无法识别的 XML → 跳过 ──
+    # ── Other unrecognizable XML → skip ──
     if stripped.startswith("<?xml") or stripped.startswith("<msg"):
         return None
 
-    # 其他文本原样返回
+    # Other text: return as-is
     return text
 
 
 class WeChatDB:
-    """微信数据库查询接口"""
+    """WeChat database query interface."""
 
     CACHE_DIR = os.path.join(tempfile.gettempdir(), "wechat_summary_cache")
 
     def __init__(self, db_dir, keys):
         """
         Args:
-            db_dir: 微信 db_storage 目录路径
-            keys: {rel_path: {"enc_key": hex}, ...} 密钥字典
+            db_dir: WeChat db_storage directory path.
+            keys: {rel_path: {"enc_key": hex}, ...} encryption key dictionary.
         """
         self.db_dir = db_dir
         self.keys = keys
         self._db_cache = {}  # rel_key -> (db_mtime, wal_mtime, cache_path)
         self._contacts = None  # {username: display_name}
         self._contacts_full = None  # [{username, nick_name, remark}]
-        self._nick_to_remark = {}  # {nick_name: remark} 昵称→备注反向映射
+        self._nick_to_remark = {}  # {nick_name: remark} reverse mapping for nickname→alias lookup
         os.makedirs(self.CACHE_DIR, exist_ok=True)
+        try:
+            os.chmod(self.CACHE_DIR, 0o700)
+        except OSError:
+            pass
 
     def invalidate_cache(self):
-        """清除所有数据库解密缓存，下次查询时强制重新解密"""
+        """Clear all DB decryption caches, force re-decrypt on next query."""
         self._db_cache.clear()
         self._contacts = None
         self._contacts_full = None
         self._nick_to_remark = {}
-        # 清理磁盘上的缓存文件
+        # Clean up cached files on disk
         if os.path.isdir(self.CACHE_DIR):
             import glob as _glob
             for f in _glob.glob(os.path.join(self.CACHE_DIR, "*.db")):
@@ -121,7 +125,7 @@ class WeChatDB:
                     pass
 
     def _get_key(self, rel_path):
-        """获取数据库密钥"""
+        """Get database encryption key."""
         normalized = rel_path.replace("\\", "/")
         for candidate in (rel_path, normalized, normalized.replace("/", "\\")):
             if candidate in self.keys:
@@ -130,7 +134,7 @@ class WeChatDB:
 
     @staticmethod
     def _is_plain_sqlite(path):
-        """检查文件是否为未加密的 SQLite 数据库"""
+        """Check if file is an unencrypted SQLite database."""
         try:
             with open(path, "rb") as f:
                 return f.read(15) == b"SQLite format 3"
@@ -138,19 +142,19 @@ class WeChatDB:
             return False
 
     def _get_decrypted_db(self, rel_path):
-        """获取解密后的数据库路径（带缓存）
+        """Get decrypted database path (with caching).
 
-        如果数据库是明文 SQLite（未加密），直接返回原路径。
+        If the database is plaintext SQLite (unencrypted), returns the original path directly.
         """
         db_path = os.path.join(self.db_dir, rel_path)
         if not os.path.exists(db_path):
             return None
 
-        # ── 如果是明文 SQLite，直接返回原路径，无需解密 ──
+        # ── If plaintext SQLite, return original path directly ──
         if self._is_plain_sqlite(db_path):
             return db_path
 
-        # ── 需要解密 ──
+        # ── Decryption needed ──
         enc_key = self._get_key(rel_path)
         if not enc_key:
             return None
@@ -162,16 +166,16 @@ class WeChatDB:
         except OSError:
             return None
 
-        # 检查缓存
+        # Check cache
         if rel_path in self._db_cache:
             c_db_mt, c_wal_mt, c_path = self._db_cache[rel_path]
-            # WAL checkpoint 后 WAL 文件消失（wal_mtime 从非零变 0），
-            # 此时如果 db_mtime 也没变（数据已合入主文件），缓存仍然有效
+            # After WAL checkpoint, WAL file disappears (wal_mtime goes from non-zero to 0).
+            # If db_mtime also hasn't changed (data merged into main file), cache is still valid.
             wal_ok = (c_wal_mt == wal_mtime) or (wal_mtime == 0 and c_db_mt == db_mtime)
             if c_db_mt == db_mtime and wal_ok and os.path.exists(c_path):
                 return c_path
 
-        # 解密
+        # Decrypt
         h = hashlib.md5(rel_path.encode()).hexdigest()[:12]
         cache_path = os.path.join(self.CACHE_DIR, f"{h}.db")
 
@@ -187,7 +191,7 @@ class WeChatDB:
         return cache_path
 
     def _load_contacts(self):
-        """加载联系人"""
+        """Load contacts."""
         if self._contacts is not None:
             return
 
@@ -200,7 +204,7 @@ class WeChatDB:
 
         names = {}
         full = []
-        nick_to_remark = {}  # 昵称 → 备注名（反向映射，用于群消息中按昵称查备注）
+        nick_to_remark = {}  # nickname → alias (reverse mapping for looking up alias by nickname in group messages)
         conn = sqlite3.connect(path)
         try:
             for r in conn.execute("SELECT username, nick_name, remark FROM contact"):
@@ -208,7 +212,7 @@ class WeChatDB:
                 display = remark if remark else nick if nick else uname
                 names[uname] = display
                 full.append({"username": uname, "nick_name": nick or "", "remark": remark or ""})
-                # 如果有备注名，建立 昵称→备注 的反向映射
+                # If alias exists, build nickname→alias reverse mapping
                 if remark and nick:
                     nick_to_remark[nick] = remark
         except Exception as e:
@@ -221,13 +225,13 @@ class WeChatDB:
         self._nick_to_remark = nick_to_remark
 
     def get_groups(self, include_unnamed=False):
-        """获取所有群聊列表
+        """Get all group chats list.
 
         Args:
-            include_unnamed: 是否包含没有群名的群聊（显示为原始 ID 的群）
+            include_unnamed: Whether to include unnamed groups (those displaying raw IDs).
 
         Returns:
-            list[dict]: [{"username": "xxx@chatroom", "name": "群名"}, ...]
+            list[dict]: [{"username": "xxx@chatroom", "name": "group name"}, ...]
         """
         self._load_contacts()
         groups = []
@@ -241,7 +245,7 @@ class WeChatDB:
                         groups.append({"username": c["username"],
                                        "name": f"无名称群{unnamed_idx}"})
                     else:
-                        # 检查是否有消息，有的话保留并编号
+                        # Check for messages; if found, keep and assign number
                         msgs = self.get_messages(c["username"], limit=1)
                         if msgs:
                             unnamed_idx += 1
@@ -252,7 +256,7 @@ class WeChatDB:
         return groups
 
     def get_recent_sessions(self, limit=200):
-        """获取最近会话（含群聊和私聊）"""
+        """Get recent sessions (groups and private chats)."""
         path = self._get_decrypted_db(os.path.join("session", "session.db"))
         if not path:
             return []
@@ -278,7 +282,7 @@ class WeChatDB:
             display = self._contacts.get(username, username)
             is_group = "@chatroom" in username
 
-            # 无名群聊：在 SessionTable 里有记录说明活跃过，用编号显示
+            # Unnamed group: has SessionTable record indicating activity, show with number
             if is_group and display == username:
                 unnamed_idx += 1
                 display = f"无名称群{unnamed_idx}"
@@ -304,20 +308,20 @@ class WeChatDB:
         return sessions
 
     def _find_msg_table(self, username):
-        """查找用户的消息表所在的所有数据库
+        """Find all databases containing a user's message table.
 
-        搜索所有消息相关的数据库文件（message_N.db 和 biz_message_N.db），
-        返回包含该表的所有数据库路径（消息可能分散在多个 db 中）。
+        Searches all message-related database files (message_N.db and biz_message_N.db),
+        returns all database paths containing the table (messages may span multiple DBs).
 
         Returns:
-            (list[str], str): (db_paths, table_name)，未找到时返回 ([], None)
+            (list[str], str): (db_paths, table_name), returns ([], None) if not found.
         """
         table_hash = hashlib.md5(username.encode()).hexdigest()
         table_name = f"Msg_{table_hash}"
 
         found_paths = []
 
-        # 1) 找有密钥的消息数据库
+        # 1) Find message databases with keys
         msg_keys = sorted([
             k for k in self.keys
             if re.search(r"message[/\\](?:biz_)?message_\d+\.db$", k.replace("\\", "/"))
@@ -340,7 +344,7 @@ class WeChatDB:
             finally:
                 conn.close()
 
-        # 2) 如果未找到，搜索缓存中可能存在的旧解密文件
+        # 2) If not found, search for old decrypted files in cache
         if not found_paths:
             for prefix in ("message", "biz_message"):
                 for i in range(10):
@@ -369,10 +373,10 @@ class WeChatDB:
         return [], None
 
     def count_messages_since(self, username, since_ts):
-        """快速统计某个群自 since_ts 之后的新消息数（只读缓存副本，安全）
+        """Quick count of new messages since since_ts (reads cached copy only, safe).
 
         Returns:
-            int: 新消息数量，查询失败返回 -1
+            int: Number of new messages, -1 on query failure.
         """
         db_paths, table_name = self._find_msg_table(username)
         if not db_paths:
@@ -394,15 +398,15 @@ class WeChatDB:
         return total
 
     def get_messages(self, username, since_ts=0, limit=500):
-        """获取群聊/私聊消息
+        """Get group/private chat messages.
 
         Args:
-            username: 用户名或群聊 ID (xxx@chatroom)
-            since_ts: 起始时间戳（只获取此时间之后的消息）
-            limit: 最大消息数
+            username: Username or group chat ID (xxx@chatroom).
+            since_ts: Start timestamp (only get messages after this time).
+            limit: Maximum number of messages.
 
         Returns:
-            list[dict]: [{"sender": "名字", "text": "内容", "timestamp": ts, "type": int}, ...]
+            list[dict]: [{"sender": "name", "text": "content", "timestamp": ts, "type": int}, ...]
         """
         self._load_contacts()
         is_group = "@chatroom" in username
@@ -411,7 +415,7 @@ class WeChatDB:
         if not db_paths:
             return []
 
-        # 从所有 db 收集行，合并后排序截断
+        # Collect rows from all DBs, merge, sort, and truncate
         all_rows = []
         for db_path in db_paths:
             conn = sqlite3.connect(db_path)
@@ -422,8 +426,9 @@ class WeChatDB:
                                WCDB_CT_message_content, status
                         FROM [{table_name}]
                         WHERE create_time > ?
-                        ORDER BY create_time ASC
-                    """, (since_ts,)).fetchall()
+                        ORDER BY create_time DESC
+                        LIMIT ?
+                    """, (since_ts, limit * 2)).fetchall()
                 else:
                     rows = conn.execute(f"""
                         SELECT local_type, create_time, message_content,
@@ -441,18 +446,18 @@ class WeChatDB:
         if not all_rows:
             return []
 
-        # 按时间排序，取最新的 limit 条
+        # Sort by time, take the latest limit entries
         all_rows.sort(key=lambda r: r[1])  # r[1] = create_time
         rows = all_rows[-limit:]
 
-        # 私聊时，用联系人显示名标注对方消息
+        # In private chat, label counterpart's messages with display name
         contact_name = ""
         if not is_group:
             contact_name = self._contacts.get(username, username)
 
         messages = []
         for local_type, create_time, content, ct, status in rows:
-            # zstd 解压
+            # zstd decompression
             if ct and ct == 4 and isinstance(content, bytes):
                 try:
                     content = _zstd_dctx.decompress(content).decode("utf-8", errors="replace")
@@ -472,19 +477,19 @@ class WeChatDB:
             text = content
             if is_group and ":\n" in content:
                 raw_sender_id, text = content.split(":\n", 1)
-                # 优先按 wxid 查（备注 > 昵称）；查不到时按昵称反查备注
+                # Prefer wxid lookup (alias > nickname); fall back to nickname→alias reverse lookup
                 sender = self._contacts.get(raw_sender_id)
                 if not sender:
                     sender = self._nick_to_remark.get(raw_sender_id, raw_sender_id)
             elif not is_group:
-                # 私聊：status=2 是自己发的，status=3 是对方发的
+                # Private chat: status=2 = sent by me, status=3 = received
                 sender = "我" if status == 2 else contact_name
 
-            # 群聊中自己发的消息没有 wxid:\n 前缀，sender 会是空的
+            # In group chat, own messages lack wxid:\n prefix, sender will be empty
             if is_group and not sender:
                 sender = "您"
 
-            # 清理 XML 特殊消息
+            # Clean XML special messages
             cleaned = _clean_msg_text(text)
             if cleaned is None:
                 continue
@@ -502,11 +507,11 @@ class WeChatDB:
         return messages
 
     def _get_fts_db(self):
-        """获取解密后的 FTS 全文搜索数据库路径"""
+        """Get decrypted FTS full-text search database path."""
         return self._get_decrypted_db("message/message_fts.db")
 
     def _build_fts_lookup(self, fts_conn):
-        """构建 FTS 辅助映射表
+        """Build FTS helper mapping tables.
 
         Returns:
             (name2id, id2name, id2sender_name)
@@ -523,60 +528,72 @@ class WeChatDB:
             rid, uname = row
             name2id[uname] = rid
             id2name[rid] = uname
-            # 解析发送者显示名
+            # Parse sender display name
             display = self._contacts.get(uname, uname)
             id2sender_name[rid] = display
 
         return name2id, id2name, id2sender_name
 
     def search_messages(self, keywords, usernames, start_ts, end_ts, limit_per_group=2000):
-        """跨群搜索消息（AND 布尔搜索 + 滑动窗口）
+        """Cross-chat message search (AND boolean search + sliding window).
 
-        优先使用 FTS 全文搜索数据库（覆盖所有历史消息），
-        若 FTS 不可用则回退到直接扫描消息数据库。
-        只读取解密缓存副本，不接触微信原始数据库。
+        Prefers FTS full-text search database (covers all historical messages).
+        Falls back to direct database scan if FTS is unavailable.
+        Only reads decrypted cache copies, never touches original WeChat databases.
 
         Args:
-            keywords: list[str] - 关键词列表（已按空格拆分）
-            usernames: list[str] - 要搜索的群聊 username 列表
-            start_ts: int/float - 起始时间戳
-            end_ts: int/float - 结束时间戳
-            limit_per_group: int - 每个群最多检索的消息数
+            keywords: list[str] - Keyword list (already split by spaces).
+            usernames: list[str] - List of group chat usernames to search.
+            start_ts: int/float - Start timestamp.
+            end_ts: int/float - End timestamp.
+            limit_per_group: int - Max messages to retrieve per group.
 
         Returns:
             dict: {username: [{"sender", "text", "timestamp", "time_str", "group_name"}]}
         """
-        # 尝试 FTS 搜索（覆盖全部历史数据）
+        # Try FTS search (covers all historical data)
         fts_path = self._get_fts_db()
         if fts_path:
             print("[search] 使用 FTS 全文索引搜索（覆盖全部历史数据）")
             return self._search_via_fts(fts_path, keywords, usernames, start_ts, end_ts, limit_per_group)
 
-        # FTS 不可用，回退到直接数据库搜索
+        # FTS unavailable, fall back to direct database search
         print("[search] FTS 不可用，回退到直接数据库搜索")
         return self._search_via_db(keywords, usernames, start_ts, end_ts, limit_per_group)
 
     def _search_via_fts(self, fts_path, keywords, usernames, start_ts, end_ts, limit_per_group=2000):
-        """通过 FTS 全文搜索数据库搜索消息
+        """Search messages via FTS full-text search database.
 
-        FTS 数据库包含所有消息的全文索引，不依赖消息数据库的解密密钥，
-        覆盖全部历史消息（可追溯至 2022 年）。
+        The FTS database contains full-text indexes of all messages, independent of
+        message database decryption keys, covering all historical messages (back to 2022).
         """
         self._load_contacts()
         results = {}
 
-        fts_conn = sqlite3.connect(fts_path)
+        fts_conn = sqlite3.connect(fts_path, timeout=5)
         try:
             name2id, id2name, id2sender_name = self._build_fts_lookup(fts_conn)
         except Exception as e:
-            print(f"[search] FTS 映射表构建失败: {e}")
+            print(f"[search] FTS 映射表构建失败: {e}", file=__import__('sys').stderr)
             fts_conn.close()
             return results
 
-        # 预处理关键词
+        try:
+            return self._search_fts_inner(
+                fts_conn, name2id, id2name, id2sender_name,
+                keywords, usernames, start_ts, end_ts, limit_per_group,
+            )
+        finally:
+            fts_conn.close()
+
+    def _search_fts_inner(self, fts_conn, name2id, id2name, id2sender_name,
+                          keywords, usernames, start_ts, end_ts, limit_per_group):
+        results = {}
+
+        # Preprocess keywords
         keywords_lower = [kw.lower() for kw in keywords]
 
-        # 构建要搜索的 session_id 集合
+        # Build set of session_ids to search
         target_sessions = {}  # session_id → username
         for uname in usernames:
             sid = name2id.get(uname)
@@ -588,16 +605,16 @@ class WeChatDB:
 
         print(f"[search] 正在搜索 {len(target_sessions)} 个群聊...")
 
-        # FTS 有 4 个内容分片表 (message_fts_v4_0_content ~ _3_content)
-        # 结构: id, c0(acontent), c1(message_local_id), c2(sort_seq),
-        #        c3(local_type), c4(session_id), c5(sender_id), c6(create_time)
+        # FTS has 4 content shard tables (message_fts_v4_0_content ~ _3_content)
+        # Schema: id, c0(acontent), c1(message_local_id), c2(sort_seq),
+        #         c3(local_type), c4(session_id), c5(sender_id), c6(create_time)
         FTS_TABLES = [f"message_fts_v4_{i}_content" for i in range(4)]
 
         for idx, (sid, uname) in enumerate(target_sessions.items()):
             group_name = self._contacts.get(uname, uname)
             print(f"[search]   ({idx+1}/{len(target_sessions)}) 搜索 {group_name}...")
 
-            # 从所有 FTS 分片收集消息
+            # Collect messages from all FTS shards
             all_msgs = []
             total_rows = 0
             for tbl in FTS_TABLES:
@@ -615,7 +632,7 @@ class WeChatDB:
                 for text, sender_id, create_time in rows:
                     if not text or not create_time:
                         continue
-                    # FTS 内容已经是清理后的文本，不需要 XML 处理
+                    # FTS content is already cleaned text, no XML processing needed
                     sender = id2sender_name.get(sender_id, str(sender_id))
                     all_msgs.append({
                         "sender": sender,
@@ -626,10 +643,10 @@ class WeChatDB:
                         "group_name": group_name,
                     })
 
-            # 按时间排序（来自不同分片的消息需要合并排序）
+            # Sort by time (messages from different shards need merge sort)
             all_msgs.sort(key=lambda m: m["timestamp"])
 
-            # 限制每群最大消息数
+            # Limit max messages per group
             if len(all_msgs) > limit_per_group:
                 all_msgs = all_msgs[:limit_per_group]
 
@@ -642,7 +659,7 @@ class WeChatDB:
 
             print(f"[search]     {total_rows} 条记录 → {len(all_msgs)} 条文本")
 
-            # 滑动窗口搜索（上下 1 条 = 共 3 条消息为一个窗口）
+            # Sliding window search (1 msg above + below = 3 msg window)
             CONTEXT = 1
             matched_indices = set()
             for i in range(len(all_msgs)):
@@ -670,18 +687,16 @@ class WeChatDB:
             else:
                 print(f"[search]   · {group_name}: 扫描 {len(all_msgs)} 条，无命中")
 
-        fts_conn.close()
-
         total_hits = sum(len(msgs) for msgs in results.values())
         print(f"[search] ✅ 搜索完成，共命中 {total_hits} 条消息，涉及 {len(results)} 个群")
         return results
 
     def _search_via_db(self, keywords, usernames, start_ts, end_ts, limit_per_group=2000):
-        """直接扫描消息数据库搜索（FTS 不可用时的回退方案）"""
+        """Direct database scan search (fallback when FTS unavailable)."""
         self._load_contacts()
         results = {}
 
-        # 预先构建 username → (db_path, table_name) 映射
+        # Pre-build username → (db_path, table_name) mapping
         table_cache = {}
         total = len(usernames)
         print(f"[search] 正在定位 {total} 个群聊的消息表...")
@@ -717,7 +732,7 @@ class WeChatDB:
                 finally:
                     conn.close()
 
-            # 多 DB 合并后按时间排序（上下文窗口依赖顺序）
+            # Sort by time after multi-DB merge (context window depends on order)
             rows.sort(key=lambda r: r[1])
 
             if not rows:
@@ -794,89 +809,91 @@ class WeChatDB:
         return results
 
     def get_fts_coverage(self, usernames):
-        """获取 FTS 中各群聊的数据覆盖范围
+        """Get data coverage range per chat in FTS.
 
         Args:
-            usernames: list[str] - 群聊 username 列表
+            usernames: list[str] - List of chat usernames.
 
         Returns:
             dict: {username: {"earliest": timestamp, "latest": timestamp, "count": int}}
-                  如果 FTS 不可用或群聊无数据，对应 username 不在结果中
+                  If FTS is unavailable or chat has no data, the username is absent from results.
         """
         fts_path = self._get_fts_db()
         if not fts_path:
             return {}
 
-        fts_conn = sqlite3.connect(fts_path)
+        fts_conn = sqlite3.connect(fts_path, timeout=5)
         try:
             name2id = dict(fts_conn.execute("SELECT username, rowid FROM name2id").fetchall())
         except Exception:
             fts_conn.close()
             return {}
 
-        coverage = {}
-        FTS_TABLES = [f"message_fts_v4_{i}_content" for i in range(4)]
+        try:
+            coverage = {}
+            FTS_TABLES = [f"message_fts_v4_{i}_content" for i in range(4)]
 
-        for uname in usernames:
-            sid = name2id.get(uname)
-            if sid is None:
-                continue
-            earliest = None
-            latest = None
-            total = 0
-            for tbl in FTS_TABLES:
-                try:
-                    row = fts_conn.execute(
-                        f"SELECT MIN(c6), MAX(c6), COUNT(*) FROM [{tbl}] WHERE c4 = ?",
-                        (sid,),
-                    ).fetchone()
-                    if row[2] > 0:
-                        total += row[2]
-                        if row[0] and (earliest is None or row[0] < earliest):
-                            earliest = row[0]
-                        if row[1] and (latest is None or row[1] > latest):
-                            latest = row[1]
-                except Exception:
+            for uname in usernames:
+                sid = name2id.get(uname)
+                if sid is None:
                     continue
-            if total > 0:
-                coverage[uname] = {"earliest": earliest, "latest": latest, "count": total}
+                earliest = None
+                latest = None
+                total = 0
+                for tbl in FTS_TABLES:
+                    try:
+                        row = fts_conn.execute(
+                            f"SELECT MIN(c6), MAX(c6), COUNT(*) FROM [{tbl}] WHERE c4 = ?",
+                            (sid,),
+                        ).fetchone()
+                        if row[2] > 0:
+                            total += row[2]
+                            if row[0] and (earliest is None or row[0] < earliest):
+                                earliest = row[0]
+                            if row[1] and (latest is None or row[1] > latest):
+                                latest = row[1]
+                    except Exception:
+                        continue
+                if total > 0:
+                    coverage[uname] = {"earliest": earliest, "latest": latest, "count": total}
 
-        fts_conn.close()
-        return coverage
+            return coverage
+        finally:
+            fts_conn.close()
 
     def resolve_username(self, name):
-        """将群名/备注名/昵称解析为 username"""
+        """Resolve group name / alias / nickname to username."""
         self._load_contacts()
         if name in self._contacts or "@chatroom" in name:
             return name
         name_lower = name.lower()
-        # 精确匹配
+        # Exact match
         for uname, display in self._contacts.items():
             if name_lower == display.lower():
                 return uname
-        # 模糊匹配
+        # Fuzzy match
         for uname, display in self._contacts.items():
             if name_lower in display.lower():
                 return uname
         return None
 
-    # ── 图片消息相关 ─────────────────────────────────────
+    # ── Image message utilities ─────────────────────────────────────
 
     @staticmethod
     def _extract_file_hash_from_protobuf(data):
-        """从 packed_info_data 的 protobuf 中提取 32 位 hex 文件哈希
+        """Extract 32-char hex file hash from packed_info_data protobuf.
 
-        手工解析 protobuf wire format（含嵌套子消息），
-        寻找 32 字节的 ASCII hex 字符串或 16 字节的原始哈希。
+        Manually parses protobuf wire format (including nested sub-messages),
+        looking for 32-byte ASCII hex strings or 16-byte raw hashes.
 
         Returns:
-            str | None: 32 字符 hex 哈希，或 None
+            str | None: 32-char hex hash, or None.
         """
         if not data or len(data) < 10:
             return None
 
         def _scan(buf, depth=0):
-            """递归扫描 protobuf 字段"""
+            """Recursively scan protobuf fields."""
             if depth > 3:
                 return []
             pos = 0
@@ -925,7 +942,7 @@ class WeChatDB:
                         if length == 16 and not all(b == 0 for b in field_data):
                             found.append(field_data.hex())
                             continue
-                        # 递归解析子消息
+                        # Recursively parse sub-messages
                         if length > 10:
                             found.extend(_scan(field_data, depth + 1))
                     else:
@@ -938,7 +955,7 @@ class WeChatDB:
         return candidates[0] if candidates else None
 
     def _get_attach_base_dir(self):
-        """从 db_dir 推导出 msg/attach 图片附件目录
+        """Derive msg/attach image attachment directory from db_dir.
 
         db_dir = .../xwechat_files/{wxid}/db_storage
         attach = .../xwechat_files/{wxid}/msg/attach
@@ -947,79 +964,20 @@ class WeChatDB:
         attach_dir = os.path.join(wxid_dir, "msg", "attach")
         return attach_dir if os.path.isdir(attach_dir) else None
 
-    _V2_MAGIC = b"\x07\x08\x56\x32\x08\x07"
-
-    @staticmethod
-    def decode_image_v2(data, aes_key, xor_key=0x88):
-        """解密 V2 格式图片（WeChat 2026+ 新格式）
-
-        V2 结构: [6B magic][4B aes_size LE][4B xor_size LE][1B pad]
-                 [AES-ECB 数据][原始数据][XOR 数据]
-
-        Args:
-            data: V2 格式的原始 bytes
-            aes_key: 16 字节 AES 密钥（bytes 或 hex 字符串）
-            xor_key: XOR 密钥字节，默认 0x88
-
-        Returns:
-            bytes | None: 解密后的图片数据
-        """
-        if len(data) < 15 or data[:6] != WeChatDB._V2_MAGIC:
-            return None
-
-        if isinstance(aes_key, str):
-            aes_key = aes_key.encode("ascii")
-        if len(aes_key) not in (16, 32):
-            return None
-
-        import struct
-        aes_size = struct.unpack_from("<I", data, 6)[0]
-        xor_size = struct.unpack_from("<I", data, 10)[0]
-        body = data[15:]  # 跳过 15 字节头
-
-        # AES 部分对齐到 16 字节
-        aligned_aes = aes_size + (16 - aes_size % 16) % 16
-
-        if aligned_aes + xor_size > len(body):
-            return None
-
-        try:
-            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-            cipher = Cipher(algorithms.AES(aes_key[:16]), modes.ECB())
-            dec = cipher.decryptor()
-            aes_part = dec.update(body[:aligned_aes]) + dec.finalize()
-            aes_part = aes_part[:aes_size]  # 去掉 padding
-        except Exception:
-            return None
-
-        raw_start = aligned_aes
-        raw_end = len(body) - xor_size
-        raw_part = body[raw_start:raw_end] if raw_end > raw_start else b""
-
-        xor_part = bytes(b ^ xor_key for b in body[-xor_size:]) if xor_size > 0 else b""
-
-        result = aes_part + raw_part + xor_part
-
-        # 验证解密结果是否为有效图片
-        if result[:2] == b"\xff\xd8" or result[:4] == b"\x89PNG" or \
-           result[:4] == b"GIF8" or (result[:4] == b"RIFF" and result[8:12] == b"WEBP"):
-            return result
-        return None
-
     def _find_image_file(self, username, create_time, file_hash=None, prefer_thumbnail=True):
-        """定位磁盘上的图片文件
+        """Locate image file on disk.
 
-        主策略：用 file_hash 直接查 attach/{md5(username)}/{YYYY-MM}/Img/{hash}_M.dat
-        后备：按文件修改时间匹配（±60 秒内最接近的文件）
+        Primary strategy: look up by file_hash in attach/{md5(username)}/{YYYY-MM}/Img/{hash}_M.dat
+        Fallback: match by file modification time (closest file within +/-60 seconds).
 
         Args:
-            username: 聊天 username
-            create_time: 消息时间戳
-            file_hash: 从 packed_info_data 提取的 32 位 hex 哈希
-            prefer_thumbnail: 优先返回缩略图
+            username: Chat username.
+            create_time: Message timestamp.
+            file_hash: 32-char hex hash extracted from packed_info_data.
+            prefer_thumbnail: Whether to prefer returning thumbnails.
 
         Returns:
-            str | None: 图片文件绝对路径
+            str | None: Absolute path to image file.
         """
         attach_base = self._get_attach_base_dir()
         if not attach_base:
@@ -1034,10 +992,10 @@ class WeChatDB:
         month_str = dt.strftime("%Y-%m")
         img_dir = os.path.join(user_dir, month_str, "Img")
 
-        # ── 主策略：按哈希直接定位 ──
+        # ── Primary strategy: locate by hash ──
         if file_hash:
             months_to_try = [month_str]
-            # 月份边界：也检查前后一个月
+            # Month boundary: also check adjacent months
             if dt.day <= 2:
                 prev = dt.replace(day=1)
                 prev = prev.replace(
@@ -1051,8 +1009,8 @@ class WeChatDB:
                 ) if nxt.month == 12 else nxt.replace(month=nxt.month + 1)
                 months_to_try.append(nxt.strftime("%Y-%m"))
 
-            # 新版(2026+): _t.dat=缩略图, .dat=中图, _h.dat=原图
-            # 旧版(~2025): _t_M.dat=缩略图, _M.dat=原图
+            # New format (2026+): _t.dat=thumbnail, .dat=medium, _h.dat=original
+            # Old format (~2025): _t_M.dat=thumbnail, _M.dat=original
             thumb_suffixes = ("_t_M.dat", "_t.dat")
             full_suffixes = ("_h.dat", "_M.dat", ".dat")
 
@@ -1075,7 +1033,7 @@ class WeChatDB:
                         if os.path.isfile(p):
                             return p
 
-        # ── 后备：按修改时间匹配 ──
+        # ── Fallback: match by modification time ──
         if not os.path.isdir(img_dir):
             return None
 
@@ -1089,7 +1047,7 @@ class WeChatDB:
         for fname in os.listdir(img_dir):
             if not any(fname.endswith(sfx) for sfx in target_suffixes):
                 continue
-            # 排除带下划线前缀的不匹配后缀（如 _t.dat 不应匹配 .dat 规则）
+            # Exclude files with underscore prefixes that don't match the target suffix
             fpath = os.path.join(img_dir, fname)
             try:
                 delta = abs(os.path.getmtime(fpath) - create_time)
@@ -1102,14 +1060,14 @@ class WeChatDB:
         return best_path if best_path and best_delta < 60 else None
 
     def get_image_messages(self, username, since_ts=0, limit=10):
-        """获取聊天中的图片消息及其文件路径
+        """Get image messages with file paths from a chat.
 
-        类似 get_messages()，但只查 local_type=3（图片），
-        并额外提取 packed_info_data 用于定位磁盘上的图片文件。
+        Similar to get_messages(), but only queries local_type=3 (images),
+        and additionally extracts packed_info_data to locate image files on disk.
 
         Returns:
-            list[dict]: 每条包含 sender, time_str, timestamp,
-                        thumb_path, image_path, file_hash
+            list[dict]: Each contains sender, time_str, timestamp,
+                        thumb_path, image_path, file_hash.
         """
         self._load_contacts()
         is_group = "@chatroom" in username
@@ -1128,8 +1086,9 @@ class WeChatDB:
                                WCDB_CT_message_content, status, packed_info_data
                         FROM [{table_name}]
                         WHERE local_type = 3 AND create_time > ?
-                        ORDER BY create_time ASC
-                    """, (since_ts,)).fetchall()
+                        ORDER BY create_time DESC
+                        LIMIT ?
+                    """, (since_ts, limit * 2)).fetchall()
                 else:
                     r = conn.execute(f"""
                         SELECT local_type, create_time, message_content,
@@ -1137,7 +1096,8 @@ class WeChatDB:
                         FROM [{table_name}]
                         WHERE local_type = 3
                         ORDER BY create_time DESC
-                    """).fetchall()
+                        LIMIT ?
+                    """, (limit * 2,)).fetchall()
                 rows.extend(r)
             except Exception:
                 pass
@@ -1147,7 +1107,7 @@ class WeChatDB:
         if not rows:
             return []
 
-        # 多 DB 合并后排序 + 截断
+        # Sort + truncate after multi-DB merge
         if since_ts > 0:
             rows.sort(key=lambda r: r[1])
         else:
@@ -1162,7 +1122,7 @@ class WeChatDB:
 
         messages = []
         for local_type, create_time, content, ct, status, packed_info in rows:
-            # 解压内容
+            # Decompress content
             if ct and ct == 4 and isinstance(content, bytes):
                 try:
                     content = _zstd_dctx.decompress(content).decode("utf-8", errors="replace")
@@ -1174,7 +1134,7 @@ class WeChatDB:
                 except Exception:
                     content = ""
 
-            # 提取发送者
+            # Extract sender
             sender = ""
             text = content or ""
             if is_group and ":\n" in text:
@@ -1187,12 +1147,12 @@ class WeChatDB:
             if is_group and not sender:
                 sender = "您"
 
-            # 提取文件哈希
+            # Extract file hash
             file_hash = None
             if packed_info and isinstance(packed_info, bytes):
                 file_hash = self._extract_file_hash_from_protobuf(packed_info)
 
-            # 定位文件
+            # Locate file
             thumb_path = self._find_image_file(
                 username, create_time, file_hash, prefer_thumbnail=True
             )
@@ -1212,13 +1172,13 @@ class WeChatDB:
         return messages
 
     def get_emoji_messages(self, username, since_ts=0, limit=10):
-        """获取聊天中的表情包/动图消息
+        """Get sticker/animated emoji messages from a chat.
 
-        查询 local_type=47 的消息，解析 XML 提取 cdnurl、md5 等信息。
+        Queries local_type=47 messages, parses XML to extract cdnurl, md5, etc.
 
         Returns:
-            list[dict]: 每条包含 sender, time_str, timestamp,
-                        md5, cdnurl, aeskey, width, height
+            list[dict]: Each contains sender, time_str, timestamp,
+                        md5, cdnurl, aeskey, width, height.
         """
         import re
 
@@ -1239,8 +1199,9 @@ class WeChatDB:
                                WCDB_CT_message_content, status
                         FROM [{table_name}]
                         WHERE local_type = 47 AND create_time > ?
-                        ORDER BY create_time ASC
-                    """, (since_ts,)).fetchall()
+                        ORDER BY create_time DESC
+                        LIMIT ?
+                    """, (since_ts, limit * 2)).fetchall()
                 else:
                     r = conn.execute(f"""
                         SELECT local_type, create_time, message_content,
@@ -1248,7 +1209,8 @@ class WeChatDB:
                         FROM [{table_name}]
                         WHERE local_type = 47
                         ORDER BY create_time DESC
-                    """).fetchall()
+                        LIMIT ?
+                    """, (limit * 2,)).fetchall()
                 rows.extend(r)
             except Exception:
                 pass
@@ -1258,7 +1220,7 @@ class WeChatDB:
         if not rows:
             return []
 
-        # 多 DB 合并后排序 + 截断
+        # Sort + truncate after multi-DB merge
         if since_ts > 0:
             rows.sort(key=lambda r: r[1])
         else:
@@ -1273,7 +1235,7 @@ class WeChatDB:
 
         messages = []
         for local_type, create_time, content, ct, status in rows:
-            # 解压内容
+            # Decompress content
             if ct and ct == 4 and isinstance(content, bytes):
                 try:
                     content = _zstd_dctx.decompress(content).decode(
@@ -1290,7 +1252,7 @@ class WeChatDB:
             if not content:
                 continue
 
-            # 解析 emoji XML
+            # Parse emoji XML
             md5_match = re.search(r'md5\s*=\s*"([a-fA-F0-9]{32})"', content)
             cdn_match = re.search(r'cdnurl\s*=\s*"([^"]+)"', content)
             aes_match = re.search(r'aeskey\s*=\s*"([^"]*)"', content)
@@ -1309,10 +1271,10 @@ class WeChatDB:
             width = int(w_match.group(1)) if w_match else 0
             height = int(h_match.group(1)) if h_match else 0
 
-            # 提取发送者
+            # Extract sender
             sender = ""
             if is_group:
-                # 群聊表情包 XML 中 fromusername 是发送者
+                # In group chat emoji XML, fromusername is the sender
                 if from_match:
                     raw_id = from_match.group(1)
                     sender = self._contacts.get(raw_id)
@@ -1338,20 +1300,20 @@ class WeChatDB:
         return messages
 
     def format_messages_for_ai(self, messages, show_group_nickname=False):
-        """将消息列表格式化为适合 AI 总结的文本
+        """Format message list into text suitable for AI summary.
 
         Args:
-            messages: 消息列表
-            show_group_nickname: 是否显示群昵称（原始 sender ID + 已知名字）
+            messages: List of messages.
+            show_group_nickname: Whether to show group nickname (raw sender ID + known name).
         """
         lines = []
         for msg in messages:
             if msg["type"] in (10000, 10002):
-                continue  # 跳过系统消息和撤回
+                continue  # Skip system messages and recalls
             sender = msg.get("sender", "")
             if sender and show_group_nickname:
                 raw_id = msg.get("raw_sender_id", "")
-                # 如果有原始 ID 且与显示名不同，附上原始 ID 帮助识别
+                # If raw ID differs from display name, append raw ID for identification
                 if raw_id and raw_id != sender:
                     sender = f"{sender}({raw_id})"
             if sender:

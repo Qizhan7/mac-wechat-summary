@@ -1,9 +1,9 @@
-"""AI 提供者工厂"""
+"""AI provider factory."""
 from core.keychain import load_key
 
 
 def _get_api_key(config):
-    """获取 API Key：优先钥匙串，其次 config"""
+    """Get API key: prefer Keychain, fall back to config."""
     key = load_key("ai-api-key")
     if key:
         return key
@@ -11,7 +11,7 @@ def _get_api_key(config):
 
 
 def create_provider(config):
-    """根据配置创建 AI 提供者"""
+    """Create AI provider based on config."""
     provider = config.get("ai_provider", "qwen")
     api_key = _get_api_key(config)
     model = config.get("ai_model", "")
@@ -63,6 +63,10 @@ def create_provider(config):
 
     elif provider == "custom":
         from .openai_provider import OpenAIProvider
+        if not model:
+            raise ValueError("自定义提供者需要设置模型名称（设置 → AI 模型）")
+        if not config.get("ai_base_url"):
+            raise ValueError("自定义提供者需要设置 Base URL（设置 → AI Base URL）")
         return OpenAIProvider(
             api_key=api_key,
             model=model,

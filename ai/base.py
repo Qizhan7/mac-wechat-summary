@@ -1,6 +1,4 @@
-"""
-AI 总结接口 - 抽象基类和 Prompt 设计
-"""
+"""AI summary interface - abstract base class and prompt templates."""
 from abc import ABC, abstractmethod
 
 
@@ -143,15 +141,15 @@ SEARCH_SUMMARY_PROMPT = """你是一个专业的群聊消息分析助手。用�
 
 
 class AIProvider(ABC):
-    """AI 提供者抽象基类"""
+    """AI provider abstract base class."""
 
     @abstractmethod
     def summarize(self, prompt: str) -> str:
-        """发送 prompt 到 AI 并返回总结结果"""
+        """Send prompt to AI and return summary result."""
         pass
 
     def build_prompt(self, group_name, messages_text, start_time, end_time, msg_count):
-        """构建总结 prompt"""
+        """Build single-chat summary prompt."""
         return SUMMARY_PROMPT.format(
             group_name=group_name,
             start_time=start_time,
@@ -161,13 +159,13 @@ class AIProvider(ABC):
         )
 
     def build_search_prompt(self, keywords_str, search_results, start_time, end_time):
-        """构建搜索总结 prompt
+        """Build search summary prompt.
 
         Args:
-            keywords_str: str - 原始关键词字符串（如 "claude api"）
-            search_results: dict - {username: [messages]} 按群分组的搜索结果
-            start_time: str - 搜索起始时间显示
-            end_time: str - 搜索结束时间显示
+            keywords_str: Raw keyword string (e.g. "claude api").
+            search_results: {username: [messages]} grouped by chat.
+            start_time: Display string for search start time.
+            end_time: Display string for search end time.
         """
         group_names = []
         parts = []
@@ -206,27 +204,22 @@ class AIProvider(ABC):
         )
 
     def build_batch_prompt(self, group_category, groups_data):
-        """构建批量总结 prompt
+        """Build batch summary prompt.
 
         Args:
-            group_category: 分组名称
-            groups_data: [{
-                "name": "群名",
-                "messages_text": "格式化的消息",
-                "start_time": "...",
-                "end_time": "...",
-                "msg_count": int,
-            }, ...]
+            group_category: Group category name.
+            groups_data: List of dicts with keys: name, messages_text,
+                start_time, end_time, msg_count.
         """
         group_list = "、".join(g["name"] for g in groups_data)
 
-        # 总时间范围
+        # Overall time range
         all_starts = [g["start_time"] for g in groups_data if g["msg_count"] > 0]
         all_ends = [g["end_time"] for g in groups_data if g["msg_count"] > 0]
         start_time = min(all_starts) if all_starts else "N/A"
         end_time = max(all_ends) if all_ends else "N/A"
 
-        # 拼接各群消息
+        # Concatenate messages from all groups
         parts = []
         for g in groups_data:
             if g["msg_count"] > 0:

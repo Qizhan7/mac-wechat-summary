@@ -1,6 +1,4 @@
-"""
-macOS Keychain 安全存储 - 用系统钥匙串保存 API Key
-"""
+"""macOS Keychain storage - securely store API keys in system keychain."""
 import subprocess
 from typing import Optional
 
@@ -8,14 +6,14 @@ SERVICE_NAME = "wechat-summary"
 
 
 def save_key(account: str, password: str) -> bool:
-    """保存密钥到 macOS 钥匙串
+    """Save a key to macOS Keychain.
 
     Args:
-        account: 账户标识 (如 "ai-api-key")
-        password: 要保存的密钥
+        account: Account identifier (e.g. "ai-api-key")
+        password: Key/password to store
     """
     try:
-        # -U: 如果已存在则更新
+        # -U: update if already exists
         subprocess.run(
             [
                 "security", "add-generic-password",
@@ -32,7 +30,7 @@ def save_key(account: str, password: str) -> bool:
 
 
 def load_key(account: str) -> Optional[str]:
-    """从 macOS 钥匙串读取密钥"""
+    """Load a key from macOS Keychain."""
     try:
         result = subprocess.run(
             [
@@ -50,7 +48,7 @@ def load_key(account: str) -> Optional[str]:
 
 
 def delete_key(account: str) -> bool:
-    """从钥匙串删除密钥"""
+    """Delete a key from Keychain."""
     try:
         subprocess.run(
             [

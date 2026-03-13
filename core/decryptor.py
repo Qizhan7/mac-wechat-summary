@@ -1,7 +1,5 @@
-"""
-数据库解密 - SQLCipher 4 解密逻辑
-基于 wechat-decrypt 项目的 decrypt_db.py
-"""
+"""Database decryption - SQLCipher 4 decryption logic.
+Based on wechat-decrypt project's decrypt_db.py."""
 import hashlib
 import hmac as hmac_mod
 import os
@@ -21,13 +19,13 @@ WAL_FRAME_HEADER_SZ = 24
 
 
 def derive_mac_key(enc_key, salt):
-    """从 enc_key 派生 HMAC 密钥"""
+    """Derive HMAC key from encryption key."""
     mac_salt = bytes(b ^ 0x3A for b in salt)
     return hashlib.pbkdf2_hmac("sha512", enc_key, mac_salt, 2, dklen=KEY_SZ)
 
 
 def decrypt_page(enc_key, page_data, pgno):
-    """解密单个数据库页面"""
+    """Decrypt a single database page."""
     iv = page_data[PAGE_SZ - RESERVE_SZ : PAGE_SZ - RESERVE_SZ + IV_SZ]
 
     if pgno == 1:
@@ -43,7 +41,7 @@ def decrypt_page(enc_key, page_data, pgno):
 
 
 def verify_page1(enc_key, page1_data):
-    """验证第一页 HMAC 以确认密钥正确"""
+    """Verify page 1 HMAC to confirm key correctness."""
     salt = page1_data[:SALT_SZ]
     mac_key = derive_mac_key(enc_key, salt)
     hmac_data = page1_data[SALT_SZ : PAGE_SZ - RESERVE_SZ + IV_SZ]
@@ -54,15 +52,15 @@ def verify_page1(enc_key, page1_data):
 
 
 def decrypt_database(db_path, out_path, enc_key_hex):
-    """解密整个数据库文件
+    """Decrypt an entire database file.
 
     Args:
-        db_path: 加密的数据库文件路径
-        out_path: 解密后输出路径
-        enc_key_hex: 十六进制密钥字符串
+        db_path: Encrypted database file path.
+        out_path: Decrypted output path.
+        enc_key_hex: Hex-encoded encryption key.
 
     Returns:
-        int: 解密的页数，失败返回 0
+        int: Number of pages decrypted, 0 on failure.
     """
     enc_key = bytes.fromhex(enc_key_hex)
     file_size = os.path.getsize(db_path)
@@ -71,7 +69,7 @@ def decrypt_database(db_path, out_path, enc_key_hex):
     if file_size < PAGE_SZ:
         return 0
 
-    # 验证密钥
+    # Verify key
     with open(db_path, "rb") as f:
         page1 = f.read(PAGE_SZ)
 
@@ -94,7 +92,7 @@ def decrypt_database(db_path, out_path, enc_key_hex):
 
 
 def decrypt_wal(wal_path, out_path, enc_key_hex):
-    """解密 WAL 文件并 patch 到已解密的数据库"""
+    """Decrypt WAL file and patch into decrypted database."""
     if not os.path.exists(wal_path):
         return 0
     wal_size = os.path.getsize(wal_path)

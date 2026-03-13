@@ -1,22 +1,22 @@
 """
-微信消息发送 - 通过 macOS AppleScript UI 自动化
+WeChat message sending via macOS AppleScript UI automation.
 
-原理：通过 System Events 控制微信桌面端界面
-  1. 激活微信窗口
-  2. 用搜索框找到目标聊天
-  3. 在输入框粘贴消息并发送
+Mechanism: Uses System Events to control the WeChat desktop app.
+  1. Activate the WeChat window
+  2. Use the search box to find the target chat
+  3. Paste the message into the input field and send
 
-前提条件：
-  - 微信桌面版已登录
-  - 运行此代码的 app（Terminal、Claude.app 等）需要辅助功能权限
-    系统设置 → 隐私与安全性 → 辅助功能
+Prerequisites:
+  - WeChat desktop app is logged in
+  - The app running this code (Terminal, Claude.app, etc.) must have
+    Accessibility permissions: System Settings -> Privacy & Security -> Accessibility
 """
 import subprocess
 import time
 
 
 def _run_osascript(script: str, timeout: int = 10) -> tuple[bool, str]:
-    """执行 AppleScript，返回 (是否成功, 输出/错误信息)"""
+    """Run AppleScript, return (success, output/error)."""
     try:
         result = subprocess.run(
             ["osascript", "-e", script],
@@ -34,7 +34,7 @@ def _run_osascript(script: str, timeout: int = 10) -> tuple[bool, str]:
 
 
 def activate_wechat() -> tuple[bool, str]:
-    """将微信窗口置于前台"""
+    """Bring WeChat window to foreground."""
     return _run_osascript("""
         tell application "WeChat"
             activate
@@ -45,16 +45,17 @@ def activate_wechat() -> tuple[bool, str]:
 
 
 def select_chat(chat_name: str) -> tuple[bool, str]:
-    """通过搜索框切换到指定聊天
+    """Switch to a specific chat via the search box.
 
-    使用 Cmd+F 打开搜索，输入名称，快速回车（在网络搜索结果加载前
-    抢先选中联系人），然后 Escape 关闭搜索面板。
+    Opens search with Cmd+F, types the name, presses Enter quickly
+    (before web search results load, so the contact stays at the top),
+    then presses Escape to close the search panel.
     """
     ok, msg = activate_wechat()
     if not ok:
         return False, f"无法激活微信: {msg}"
 
-    # 转义特殊字符
+    # Escape special characters
     escaped = chat_name.replace("\\", "\\\\").replace('"', '\\"')
 
     script = f"""
@@ -64,22 +65,22 @@ def select_chat(chat_name: str) -> tuple[bool, str]:
                 set frontmost to true
                 delay 0.3
 
-                -- Cmd+F 打开搜索框
+                -- Cmd+F: open search
                 keystroke "f" using command down
                 delay 0.5
 
-                -- 清空搜索框并粘贴聊天名
+                -- Clear search and paste chat name
                 keystroke "a" using command down
                 delay 0.1
                 keystroke "v" using command down
                 delay 0.1
 
-                -- 立刻回车！在网络搜索结果加载之前，联系人还在第一位
-                -- 0.1s：本地结果已渲染，网络结果还没加载（实测最佳值）
+                -- Press Enter immediately before web results load
+                -- 0.1s: local results rendered, web results not yet loaded (optimal)
                 key code 36
                 delay 0.8
 
-                -- Escape 关闭搜索面板
+                -- Escape: close search panel
                 key code 53
                 delay 0.5
             end tell
@@ -90,12 +91,14 @@ def select_chat(chat_name: str) -> tuple[bool, str]:
 
 
 def send_to_current_chat(text: str) -> tuple[bool, str]:
-    """向当前打开的聊天发送消息
+    """Send a message to the currently open chat.
 
-    假设微信已在前台且已选中目标聊天。
-    点击右侧聊天面板的输入框区域，粘贴消息并发送。
+    Assumes WeChat is in the foreground with the target chat selected.
+    After select_chat closes the search panel, the input field already
+    has focus — so we just paste and press Enter. No coordinate clicking
+    needed, which avoids issues with varying window sizes.
     """
-    # 转义特殊字符
+    # Escape special characters
     escaped = text.replace("\\", "\\\\").replace('"', '\\"')
 
     script = f"""
@@ -105,23 +108,11 @@ def send_to_current_chat(text: str) -> tuple[bool, str]:
                 set frontmost to true
                 delay 0.3
 
-                -- 获取窗口位置和尺寸
-                set winPos to position of window 1
-                set winSize to size of window 1
-
-                -- 点击右侧聊天面板的输入框（70% 宽度处，底部上方 50px）
-                -- 微信左侧是会话列表/搜索面板，右侧是聊天区域
-                set clickX to (item 1 of winPos) + (item 1 of winSize) * 0.7
-                set clickY to (item 2 of winPos) + (item 2 of winSize) - 50
-
-                click at {{clickX, clickY}}
-                delay 0.3
-
-                -- 粘贴消息
+                -- Paste message (input field already focused after search)
                 keystroke "v" using command down
                 delay 0.3
 
-                -- 回车发送
+                -- Press Enter to send
                 key code 36
                 delay 0.3
             end tell
@@ -132,28 +123,79 @@ def send_to_current_chat(text: str) -> tuple[bool, str]:
 
 
 def send_message(text: str, chat_name: str | None = None) -> tuple[bool, str]:
-    """发送微信消息
+    """Send a WeChat message.
+
+    Uses a single combined AppleScript call to avoid focus/timing issues
+    between separate subprocess invocations.
 
     Args:
-        text: 要发送的消息文本
-        chat_name: 目标聊天名称（群名或联系人名）。
-                   如果为 None，发送到当前打开的聊天。
+        text: Message text to send.
+        chat_name: Target chat name (group or contact).
+                   If None, sends to the currently open chat.
 
     Returns:
-        (是否成功, 结果说明)
+        (success, result description)
     """
     if not text.strip():
         return False, "消息内容不能为空"
 
-    # 如果指定了聊天名，先切换
-    if chat_name:
-        ok, msg = select_chat(chat_name)
-        if not ok:
-            return False, f"无法切换到聊天「{chat_name}」: {msg}"
-        time.sleep(0.3)
+    escaped_text = text.replace("\\", "\\\\").replace('"', '\\"')
 
-    # 发送消息
-    ok, msg = send_to_current_chat(text)
+    if chat_name:
+        # Combined: activate + search chat + send message in ONE AppleScript
+        escaped_name = chat_name.replace("\\", "\\\\").replace('"', '\\"')
+        script = f"""
+            tell application "WeChat"
+                activate
+                reopen
+            end tell
+            delay 0.5
+
+            set the clipboard to "{escaped_name}"
+            tell application "System Events"
+                tell process "WeChat"
+                    set frontmost to true
+                    delay 0.3
+
+                    -- Cmd+F: open search
+                    keystroke "f" using command down
+                    delay 0.5
+
+                    -- Clear search and paste chat name
+                    keystroke "a" using command down
+                    delay 0.1
+                    keystroke "v" using command down
+                    delay 0.1
+
+                    -- Press Enter before web results load
+                    key code 36
+                    delay 0.8
+
+                    -- Escape: close search panel, input field gets focus
+                    key code 53
+                    delay 0.5
+                end tell
+            end tell
+
+            -- Now paste and send the message
+            set the clipboard to "{escaped_text}"
+            tell application "System Events"
+                tell process "WeChat"
+                    keystroke "v" using command down
+                    delay 0.3
+
+                    -- Press Enter to send
+                    key code 36
+                    delay 0.3
+                end tell
+            end tell
+            return "ok"
+        """
+        ok, msg = _run_osascript(script, timeout=30)
+    else:
+        # No chat switch needed, just send to current chat
+        ok, msg = send_to_current_chat(text)
+
     if ok:
         target = chat_name or "当前聊天"
         return True, f"✅ 已发送到「{target}」"
