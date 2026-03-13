@@ -1,19 +1,30 @@
 """
-WeChat message sending via macOS AppleScript UI automation.
+WeChat message sending via macOS UI automation.
 
-Mechanism: Uses System Events to control the WeChat desktop app.
-  1. Activate the WeChat window
-  2. Use the search box to find the target chat
-  3. Paste the message into the input field and send
+Mechanism:
+  1. Activate the WeChat window (AppleScript)
+  2. If chat_name given: use search box to find the target chat (AppleScript)
+  3. Click the input field, paste and send the message (CGEvent)
+
+The send sequence (click input → Cmd+V paste → Enter) uses Quartz CGEvent
+exclusively, avoiding additional AppleScript subprocess calls that can steal
+focus or lose the input-box cursor.
 
 Prerequisites:
   - WeChat desktop app is logged in
   - The app running this code (Terminal, Claude.app, etc.) must have
     Accessibility permissions: System Settings -> Privacy & Security -> Accessibility
 """
+
 import subprocess
 import time
 
+import Quartz
+
+
+# ---------------------------------------------------------------------------
+# Low-level helpers
+# ---------------------------------------------------------------------------
 
 def _run_osascript(script: str, timeout: int = 10) -> tuple[bool, str]:
     """Run AppleScript, return (success, output/error)."""
@@ -32,6 +43,113 @@ def _run_osascript(script: str, timeout: int = 10) -> tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 
+
+def _cg_click(x: float, y: float):
+    """Click at screen coordinates (x, y) using CGEvent."""
+    point = (x, y)
+    down = Quartz.CGEventCreateMouseEvent(
+        None, Quartz.kCGEventLeftMouseDown, point, Quartz.kCGMouseButtonLeft,
+    )
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+    time.sleep(0.05)
+    up = Quartz.CGEventCreateMouseEvent(
+        None, Quartz.kCGEventLeftMouseUp, point, Quartz.kCGMouseButtonLeft,
+    )
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+
+
+def _cg_key(keycode: int, flags: int = 0):
+    """Press and release a key using CGEvent.
+
+    Args:
+        keycode: macOS virtual keycode (e.g. 36=Return, 9='v').
+        flags:   Modifier flags (e.g. kCGEventFlagMaskCommand for Cmd).
+
+    IMPORTANT: flags are ALWAYS set explicitly (even 0 = no modifiers)
+    to prevent inheriting stale modifier state from previous events.
+    Without this, a bare Enter after Cmd+V could become Cmd+Enter
+    (which inserts a newline in WeChat instead of sending).
+    """
+    down = Quartz.CGEventCreateKeyboardEvent(None, keycode, True)
+    Quartz.CGEventSetFlags(down, flags)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+    time.sleep(0.05)
+    up = Quartz.CGEventCreateKeyboardEvent(None, keycode, False)
+    Quartz.CGEventSetFlags(up, flags)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+
+
+# ---------------------------------------------------------------------------
+# WeChat window helpers
+# ---------------------------------------------------------------------------
+
+def _get_window_rect() -> tuple[float, float, float, float] | None:
+    """Get WeChat window (x, y, width, height) via AppleScript."""
+    ok, result = _run_osascript("""
+        tell application "System Events"
+            tell process "WeChat"
+                set winPos to position of window 1
+                set winSize to size of window 1
+                set wx to (item 1 of winPos) as text
+                set wy to (item 2 of winPos) as text
+                set ww to (item 1 of winSize) as text
+                set wh to (item 2 of winSize) as text
+                return wx & "," & wy & "," & ww & "," & wh
+            end tell
+        end tell
+    """)
+    if not ok:
+        return None
+    try:
+        parts = [float(v) for v in result.split(",")]
+        if len(parts) == 4:
+            return (parts[0], parts[1], parts[2], parts[3])
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
+def _click_input_box() -> bool:
+    """Click the WeChat message input box using CGEvent.
+
+    Position is calculated from the WeChat window geometry:
+      - Horizontal: 70 % of window width (safely past the ~280-320 px sidebar,
+        landing in the middle of the chat panel).
+      - Vertical:   55 px from the window bottom (inside the input text area,
+        which occupies roughly the bottom 100 px).
+
+    Returns True if the click was performed, False on failure.
+    """
+    rect = _get_window_rect()
+    if not rect:
+        return False
+    wx, wy, ww, wh = rect
+    x = wx + ww * 0.7
+    y = wy + wh - 55
+    _cg_click(x, y)
+    return True
+
+
+def _paste_and_send(text: str):
+    """Set clipboard → Cmd+V → Enter, all via CGEvent / pbcopy.
+
+    No AppleScript subprocess, so WeChat keeps keyboard focus throughout.
+    """
+    subprocess.run(["pbcopy"], input=text.encode("utf-8"), timeout=5)
+    time.sleep(0.1)
+
+    # Cmd+V  (keycode 9 = 'v')
+    _cg_key(9, Quartz.kCGEventFlagMaskCommand)
+    time.sleep(0.5)
+
+    # Return  (keycode 36) — flags=0 explicitly clears Cmd modifier
+    _cg_key(36, 0)
+    time.sleep(0.3)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def activate_wechat() -> tuple[bool, str]:
     """Bring WeChat window to foreground."""
@@ -55,7 +173,6 @@ def select_chat(chat_name: str) -> tuple[bool, str]:
     if not ok:
         return False, f"无法激活微信: {msg}"
 
-    # Escape special characters
     escaped = chat_name.replace("\\", "\\\\").replace('"', '\\"')
 
     script = f"""
@@ -76,7 +193,6 @@ def select_chat(chat_name: str) -> tuple[bool, str]:
                 delay 0.1
 
                 -- Press Enter immediately before web results load
-                -- 0.1s: local results rendered, web results not yet loaded (optimal)
                 key code 36
                 delay 0.8
 
@@ -93,43 +209,32 @@ def select_chat(chat_name: str) -> tuple[bool, str]:
 def send_to_current_chat(text: str) -> tuple[bool, str]:
     """Send a message to the currently open chat.
 
-    Assumes WeChat is in the foreground with the target chat selected.
-    After select_chat closes the search panel, the input field already
-    has focus — so we just paste and press Enter. No coordinate clicking
-    needed, which avoids issues with varying window sizes.
+    Activates WeChat, clicks the input box, pastes and sends.
+    Works regardless of whether the input field already has focus.
     """
-    # Escape special characters
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    ok, msg = activate_wechat()
+    if not ok:
+        return False, f"无法激活微信: {msg}"
 
-    script = f"""
-        set the clipboard to "{escaped}"
-        tell application "System Events"
-            tell process "WeChat"
-                set frontmost to true
-                delay 0.3
+    if not _click_input_box():
+        return False, "无法定位微信输入框"
+    time.sleep(0.3)
 
-                -- Paste message (input field already focused after search)
-                keystroke "v" using command down
-                delay 0.3
-
-                -- Press Enter to send
-                key code 36
-                delay 0.3
-            end tell
-        end tell
-        return "ok"
-    """
-    return _run_osascript(script, timeout=10)
+    _paste_and_send(text)
+    return True, "ok"
 
 
 def send_message(text: str, chat_name: str | None = None) -> tuple[bool, str]:
     """Send a WeChat message.
 
-    Uses a single combined AppleScript call to avoid focus/timing issues
-    between separate subprocess invocations.
+    Strategy:
+      - AppleScript is used **only** for activating WeChat and navigating
+        to the target chat (search → Enter → Escape).
+      - Everything after that (click input box → paste → Enter) uses CGEvent,
+        which runs in-process and cannot lose window focus.
 
     Args:
-        text: Message text to send.
+        text:      Message text to send.
         chat_name: Target chat name (group or contact).
                    If None, sends to the currently open chat.
 
@@ -139,61 +244,22 @@ def send_message(text: str, chat_name: str | None = None) -> tuple[bool, str]:
     if not text.strip():
         return False, "消息内容不能为空"
 
-    escaped_text = text.replace("\\", "\\\\").replace('"', '\\"')
-
     if chat_name:
-        # Combined: activate + search chat + send message in ONE AppleScript
-        escaped_name = chat_name.replace("\\", "\\\\").replace('"', '\\"')
-        script = f"""
-            tell application "WeChat"
-                activate
-                reopen
-            end tell
-            delay 0.5
+        # Step 1: AppleScript — activate + search + select chat + Escape
+        ok, msg = select_chat(chat_name)
+        if not ok:
+            return False, f"选择聊天失败: {msg}"
 
-            set the clipboard to "{escaped_name}"
-            tell application "System Events"
-                tell process "WeChat"
-                    set frontmost to true
-                    delay 0.3
+        # Step 2: CGEvent — click input box (Escape 后焦点不确定)
+        if not _click_input_box():
+            return False, "无法定位微信输入框"
+        time.sleep(0.3)
 
-                    -- Cmd+F: open search
-                    keystroke "f" using command down
-                    delay 0.5
-
-                    -- Clear search and paste chat name
-                    keystroke "a" using command down
-                    delay 0.1
-                    keystroke "v" using command down
-                    delay 0.1
-
-                    -- Press Enter before web results load
-                    key code 36
-                    delay 0.8
-
-                    -- Escape: close search panel, input field gets focus
-                    key code 53
-                    delay 0.5
-                end tell
-            end tell
-
-            -- Now paste and send the message
-            set the clipboard to "{escaped_text}"
-            tell application "System Events"
-                tell process "WeChat"
-                    keystroke "v" using command down
-                    delay 0.3
-
-                    -- Press Enter to send
-                    key code 36
-                    delay 0.3
-                end tell
-            end tell
-            return "ok"
-        """
-        ok, msg = _run_osascript(script, timeout=30)
+        # Step 3: CGEvent — paste + Enter (in-process, no focus loss)
+        _paste_and_send(text)
+        ok = True
     else:
-        # No chat switch needed, just send to current chat
+        # Already in target chat — activate, click, paste+send
         ok, msg = send_to_current_chat(text)
 
     if ok:

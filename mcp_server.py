@@ -909,7 +909,7 @@ def get_ai_config() -> str:
 def send_message(text: str, chat_name: str = "") -> str:
     """通过微信桌面端发送消息。
 
-    使用 macOS AppleScript UI 自动化控制微信桌面端。
+    使用 macOS UI 自动化控制微信桌面端，发送后自动验证消息是否出现在数据库中。
     需要微信已登录并在前台，运行此工具的 app 需要辅助功能权限。
 
     ⚠️ 重要：发送前请向用户确认消息内容和发送目标！
@@ -924,11 +924,55 @@ def send_message(text: str, chat_name: str = "") -> str:
 
         target = chat_name if chat_name else None
         ok, msg = _send(text, target)
-        return msg
+        if not ok:
+            return f"❌ {msg}"
+
+        display = chat_name or "当前聊天"
+
+        # --- Verify: check if the message actually appeared in the DB ---
+        if chat_name:
+            verified = _verify_sent(text, chat_name)
+            if verified is True:
+                return f"✅ 已发送到「{display}」（已验证）"
+            elif verified is False:
+                return f"⚠️ 操作完成但未在数据库中确认到消息「{display}」，请检查微信窗口"
+            # verified is None → verification skipped / error
+        return f"✅ 已发送到「{display}」"
     except ImportError:
         return "❌ 发送模块未找到，请确认 core/sender.py 存在"
     except Exception as e:
         return f"❌ 发送失败: {e}"
+
+
+def _verify_sent(text: str, chat_name: str) -> bool | None:
+    """Check if a just-sent message appeared in the WeChat database.
+
+    Returns True (confirmed), False (not found), or None (verification unavailable).
+    """
+    try:
+        db = _get_db()
+        username = db.resolve_username(chat_name)
+        if not username:
+            return None
+
+        # Wait for WeChat to flush the message to its database
+        time.sleep(2)
+
+        # Force re-decrypt to pick up latest data (including WAL)
+        db.invalidate_cache()
+
+        # Read last 5 messages
+        since_ts = time.time() - 30  # only look at messages from last 30 seconds
+        messages = db.get_messages(username, since_ts=since_ts, limit=5)
+
+        sent_text = text.strip()
+        for msg in messages:
+            if msg.get("type", 0) == 1 and msg.get("text", "").strip() == sent_text:
+                return True
+
+        return False
+    except Exception:
+        return None
 
 
 # ── Entry point ───────────────────────────────────────────
