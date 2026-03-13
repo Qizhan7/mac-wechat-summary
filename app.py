@@ -1865,24 +1865,34 @@ class WeChatSummaryApp(rumps.App):
 
     @rumps.clicked("重新提取密钥")
     def reextract_keys(self, _):
+        print("[keys] 点击重新提取密钥")
         if not is_wechat_running():
+            print("[keys] ✗ 微信未运行")
             _notify("微信总结", "微信未运行", "请先启动微信并登录")
             return
         if not is_wechat_signed():
+            print("[keys] ✗ 微信未签名")
             _notify("微信总结", "微信需要重新授权", _wechat_signing_message())
             return
+        print("[keys] 开始提取...")
         threading.Thread(target=self._do_reextract, daemon=True).start()
 
     def _do_reextract(self):
         self._set_status(ICON_LOADING)
         _notify("微信总结", "正在提取", "需要管理员权限...")
-        keys = extract_keys()
-        if keys:
-            self.db = WeChatDB(self.config["db_dir"], keys)
-            self._run_on_main(self._rebuild_chat_menu)
-            _notify("微信总结", "密钥提取成功", f"找到 {len(keys)} 个数据库密钥")
-        else:
-            _notify("微信总结", "提取失败", _wechat_signing_message())
+        try:
+            keys = extract_keys()
+            print(f"[keys] extract_keys 返回: {len(keys) if keys else 0} 个密钥")
+            if keys:
+                self.db = WeChatDB(self.config["db_dir"], keys)
+                self._run_on_main(self._rebuild_chat_menu)
+                _notify("微信总结", "密钥提取成功", f"找到 {len(keys)} 个数据库密钥")
+            else:
+                _notify("微信总结", "提取失败", _wechat_signing_message())
+        except Exception as e:
+            print(f"[keys] ✗ 提取异常: {e}")
+            traceback.print_exc()
+            _notify("微信总结", "提取失败", str(e))
         self._set_status(ICON_NORMAL)
 
 
