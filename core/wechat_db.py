@@ -307,7 +307,7 @@ class WeChatDB:
         """查找用户的消息表所在的数据库
 
         搜索所有消息相关的数据库文件（message_N.db 和 biz_message_N.db），
-        如果同一张表出现在多个数据库中，返回消息行数最多的那个（真正的聊天记录）。
+        如果同一张表出现在多个数据库中，返回最新消息时间最大的那个。
         同时搜索仍存在于缓存中的旧解密文件（即使当前没有密钥）。
         """
         table_hash = hashlib.md5(username.encode()).hexdigest()
@@ -320,7 +320,7 @@ class WeChatDB:
         ])
 
         best_path = None
-        best_count = -1
+        best_max_ts = -1
 
         for rel_key in msg_keys:
             path = self._get_decrypted_db(rel_key)
@@ -333,25 +333,25 @@ class WeChatDB:
                     (table_name,),
                 ).fetchone()
                 if exists:
-                    count = conn.execute(
-                        f"SELECT COUNT(*) FROM [{table_name}]"
-                    ).fetchone()[0]
-                    if count > best_count:
-                        best_count = count
+                    row = conn.execute(
+                        f"SELECT MAX(create_time) FROM [{table_name}]"
+                    ).fetchone()
+                    max_ts = row[0] if row and row[0] else 0
+                    if max_ts > best_max_ts:
+                        best_max_ts = max_ts
                         best_path = path
             except Exception:
                 pass
             finally:
                 conn.close()
 
-        # 2) 如果未找到或行数太少，搜索缓存中可能存在的旧解密文件
-        #    （某些 message_N.db 可能之前解密过但现在密钥丢失）
-        if best_count < 100:
+        # 2) 如果未找到，搜索缓存中可能存在的旧解密文件
+        if best_max_ts <= 0:
             for prefix in ("message", "biz_message"):
                 for i in range(10):
                     rel = f"message/{prefix}_{i}.db"
                     if rel in self.keys:
-                        continue  # 已经在上面搜过了
+                        continue
                     h = hashlib.md5(rel.encode()).hexdigest()[:12]
                     cache_path = os.path.join(self.CACHE_DIR, f"{h}.db")
                     if not os.path.exists(cache_path):
@@ -363,11 +363,12 @@ class WeChatDB:
                             (table_name,),
                         ).fetchone()
                         if exists:
-                            count = conn.execute(
-                                f"SELECT COUNT(*) FROM [{table_name}]"
-                            ).fetchone()[0]
-                            if count > best_count:
-                                best_count = count
+                            row = conn.execute(
+                                f"SELECT MAX(create_time) FROM [{table_name}]"
+                            ).fetchone()
+                            max_ts = row[0] if row and row[0] else 0
+                            if max_ts > best_max_ts:
+                                best_max_ts = max_ts
                                 best_path = cache_path
                     except Exception:
                         pass
