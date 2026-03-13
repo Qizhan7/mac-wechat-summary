@@ -57,14 +57,18 @@ ensure_python() {
 
     # 尝试找到可用的 python3 路径（优先用满足版本要求的）
     _find_suitable_python() {
-        # 候选路径：Homebrew 常见位置 + 系统默认
+        # 候选路径：pyenv / Homebrew / 官方安装包 / 系统默认
         local candidates=(
+            "$HOME/.pyenv/shims/python3"
             "/opt/homebrew/bin/python3.12"
             "/opt/homebrew/bin/python3.11"
             "/opt/homebrew/bin/python3.10"
             "/usr/local/bin/python3.12"
             "/usr/local/bin/python3.11"
             "/usr/local/bin/python3.10"
+            "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3"
+            "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3"
+            "/Library/Frameworks/Python.framework/Versions/3.10/bin/python3"
             "python3"
         )
         for candidate in "${candidates[@]}"; do

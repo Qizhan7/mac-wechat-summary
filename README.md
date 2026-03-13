@@ -43,28 +43,31 @@ macOS 菜单栏应用，一键总结微信群聊消息。
 ## 项目结构
 
 ```
-├── app.py              # 主程序入口（菜单栏应用）
+├── app.py               # 主程序入口（菜单栏应用）
 ├── core/
-│   ├── wechat_db.py    # 微信数据库解密与消息读取
-│   ├── decryptor.py    # SQLCipher 数据库解密
+│   ├── wechat_db.py     # 微信数据库解密与消息读取
+│   ├── decryptor.py     # SQLCipher 数据库解密
 │   ├── key_extractor.py # 密钥提取管理
-│   ├── config.py       # 配置管理
-│   ├── keychain.py     # macOS 钥匙串存取
-│   ├── bookmark.py     # 阅读书签
-│   ├── chat_groups.py  # 分组管理
-│   └── sender.py       # 消息发送
+│   ├── config.py        # 配置管理
+│   ├── keychain.py      # macOS 钥匙串存取
+│   ├── bookmark.py      # 阅读书签
+│   ├── chat_groups.py   # 分组管理
+│   └── sender.py        # 消息发送
 ├── ai/
-│   ├── base.py         # AI 提供者基类与 Prompt
-│   ├── factory.py      # AI 提供者工厂
+│   ├── base.py          # AI 提供者基类与 Prompt
+│   ├── factory.py       # AI 提供者工厂
 │   ├── claude_provider.py
 │   ├── openai_provider.py
 │   └── ollama_provider.py
 ├── c_src/
-│   └── find_keys_macos.c # 内存扫描 C 程序
-├── mcp_server.py       # MCP Server（供 Claude 调用）
-├── 启动.command         # 一键启动脚本
-├── setup.py            # 打包配置（可选）
-└── requirements.txt    # Python 依赖
+│   └── find_keys_macos.c # 内存扫描 C 程序（运行时自动编译）
+├── resources/            # 菜单栏图标资源
+├── mcp_server.py        # MCP Server（供 AI Agent 调用）
+├── 启动.command          # 一键启动脚本（双击即可运行）
+├── setup.py             # py2app 打包配置（可选）
+├── requirements.txt     # Python 依赖
+├── 使用说明.txt          # 安装与使用指南
+└── 功能说明.txt          # 功能详细说明
 ```
 
 ## MCP Server
