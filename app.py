@@ -154,7 +154,7 @@ class WeChatSummaryApp(rumps.App):
             rumps.separator,
             self._build_mcp_menu(),
             self._build_settings_menu(),
-            rumps.MenuItem("重新提取密钥", callback=self.reextract_keys),
+            rumps.MenuItem("🔄 刷新数据源", callback=self.reextract_keys),
         ]
 
         self._rebuild_summary_history()
@@ -281,7 +281,7 @@ class WeChatSummaryApp(rumps.App):
         """重建设置菜单（配置变更后）"""
         if "⚙️ 设置" in self.menu:
             del self.menu["⚙️ 设置"]
-        self.menu.insert_before("重新提取密钥", self._build_settings_menu())
+        self.menu.insert_before("🔄 刷新数据源", self._build_settings_menu())
 
     # ── MCP 服务菜单 ──────────────────────────────────────
 
@@ -695,10 +695,10 @@ class WeChatSummaryApp(rumps.App):
                 _notify("微信总结", "编译失败", "需安装 Xcode CLI Tools")
                 self._set_status(ICON_ERROR)
                 return
-            _notify("微信总结", "首次运行", "正在提取数据库密钥...")
+            _notify("微信总结", "首次运行", "正在同步数据源...")
             keys = extract_keys()
             if not keys:
-                _notify("微信总结", "密钥提取失败", "请确认微信已登录且已重签名")
+                _notify("微信总结", "数据源同步失败", "请确认微信已登录且已重签名")
                 self._set_status(ICON_ERROR)
                 return
 
@@ -721,7 +721,7 @@ class WeChatSummaryApp(rumps.App):
                 names = ", ".join(os.path.basename(m) for m in missing)
                 print(f"[init] ⚠ 发现 {len(missing)} 个数据库缺少密钥: {names}")
                 _notify("微信总结", f"发现 {len(missing)} 个新数据库",
-                        f"建议点击「重新提取密钥」更新\n{names}")
+                        f"建议点击「🔄 刷新数据源」更新\n{names}")
             else:
                 print("[init] ✓ 所有数据库密钥完整")
         except Exception as e:
@@ -1883,9 +1883,9 @@ class WeChatSummaryApp(rumps.App):
         finally:
             self._set_status(ICON_NORMAL)
 
-    @rumps.clicked("重新提取密钥")
+    @rumps.clicked("🔄 刷新数据源")
     def reextract_keys(self, _):
-        print("[keys] 点击重新提取密钥")
+        print("[keys] 点击🔄 刷新数据源")
         if not is_wechat_running():
             print("[keys] ✗ 微信未运行")
             _notify("微信总结", "微信未运行", "请先启动微信并登录")
@@ -1894,25 +1894,25 @@ class WeChatSummaryApp(rumps.App):
             print("[keys] ✗ 微信未签名")
             _notify("微信总结", "微信需要重新授权", _wechat_signing_message())
             return
-        print("[keys] 开始提取...")
+        print("[keys] 开始刷新数据源...")
         threading.Thread(target=self._do_reextract, daemon=True).start()
 
     def _do_reextract(self):
         self._set_status(ICON_LOADING)
-        _notify("微信总结", "正在提取", "需要管理员权限...")
+        _notify("微信总结", "正在刷新数据源", "需要管理员权限...")
         try:
             keys = extract_keys()
             print(f"[keys] extract_keys 返回: {len(keys) if keys else 0} 个密钥")
             if keys:
                 self.db = WeChatDB(self.config["db_dir"], keys)
                 self._run_on_main(self._rebuild_chat_menu)
-                _notify("微信总结", "密钥提取成功", f"找到 {len(keys)} 个数据库密钥")
+                _notify("微信总结", "数据源刷新成功", f"已同步 {len(keys)} 个数据库")
             else:
-                _notify("微信总结", "提取失败", _wechat_signing_message())
+                _notify("微信总结", "刷新失败", _wechat_signing_message())
         except Exception as e:
-            print(f"[keys] ✗ 提取异常: {e}")
+            print(f"[keys] ✗ 刷新异常: {e}")
             traceback.print_exc()
-            _notify("微信总结", "提取失败", str(e))
+            _notify("微信总结", "刷新失败", str(e))
         self._set_status(ICON_NORMAL)
 
 

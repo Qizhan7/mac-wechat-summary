@@ -61,7 +61,7 @@ def _get_db():
             "或在 ~/.wechat-summary/config.json 中设置 db_dir。"
         )
 
-    # 检测 keys 文件是否被更新（菜单栏 app 重新提取密钥后会写入新文件）
+    # 检测 keys 文件是否被更新（菜单栏 app 🔄 刷新数据源后会写入新文件）
     keys_file = cfg.get("keys_file", os.path.expanduser("~/.wechat-summary/all_keys.json"))
     cur_mtime = os.path.getmtime(keys_file) if os.path.exists(keys_file) else 0
     if _db is not None and cur_mtime == _keys_mtime:
@@ -70,7 +70,7 @@ def _get_db():
     keys = get_cached_keys()
     if not keys:
         raise RuntimeError(
-            "未找到数据库密钥。请先运行菜单栏 app 的「重新提取密钥」功能。"
+            "未找到数据库密钥。请先运行菜单栏 app 的「🔄 刷新数据源」功能。"
         )
 
     _db = WeChatDB(db_dir, keys)
