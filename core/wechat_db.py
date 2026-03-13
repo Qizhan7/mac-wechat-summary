@@ -304,23 +304,24 @@ class WeChatDB:
         return sessions
 
     def _find_msg_table(self, username):
-        """查找用户的消息表所在的数据库
+        """查找用户的消息表所在的所有数据库
 
         搜索所有消息相关的数据库文件（message_N.db 和 biz_message_N.db），
-        如果同一张表出现在多个数据库中，返回最新消息时间最大的那个。
-        同时搜索仍存在于缓存中的旧解密文件（即使当前没有密钥）。
+        返回包含该表的所有数据库路径（消息可能分散在多个 db 中）。
+
+        Returns:
+            (list[str], str): (db_paths, table_name)，未找到时返回 ([], None)
         """
         table_hash = hashlib.md5(username.encode()).hexdigest()
         table_name = f"Msg_{table_hash}"
+
+        found_paths = []
 
         # 1) 找有密钥的消息数据库
         msg_keys = sorted([
             k for k in self.keys
             if re.search(r"message[/\\](?:biz_)?message_\d+\.db$", k.replace("\\", "/"))
         ])
-
-        best_path = None
-        best_max_ts = -1
 
         for rel_key in msg_keys:
             path = self._get_decrypted_db(rel_key)
@@ -333,20 +334,14 @@ class WeChatDB:
                     (table_name,),
                 ).fetchone()
                 if exists:
-                    row = conn.execute(
-                        f"SELECT MAX(create_time) FROM [{table_name}]"
-                    ).fetchone()
-                    max_ts = row[0] if row and row[0] else 0
-                    if max_ts > best_max_ts:
-                        best_max_ts = max_ts
-                        best_path = path
+                    found_paths.append(path)
             except Exception:
                 pass
             finally:
                 conn.close()
 
         # 2) 如果未找到，搜索缓存中可能存在的旧解密文件
-        if best_max_ts <= 0:
+        if not found_paths:
             for prefix in ("message", "biz_message"):
                 for i in range(10):
                     rel = f"message/{prefix}_{i}.db"
@@ -363,21 +358,15 @@ class WeChatDB:
                             (table_name,),
                         ).fetchone()
                         if exists:
-                            row = conn.execute(
-                                f"SELECT MAX(create_time) FROM [{table_name}]"
-                            ).fetchone()
-                            max_ts = row[0] if row and row[0] else 0
-                            if max_ts > best_max_ts:
-                                best_max_ts = max_ts
-                                best_path = cache_path
+                            found_paths.append(cache_path)
                     except Exception:
                         pass
                     finally:
                         conn.close()
 
-        if best_path:
-            return best_path, table_name
-        return None, None
+        if found_paths:
+            return found_paths, table_name
+        return [], None
 
     def count_messages_since(self, username, since_ts):
         """快速统计某个群自 since_ts 之后的新消息数（只读缓存副本，安全）
@@ -385,21 +374,24 @@ class WeChatDB:
         Returns:
             int: 新消息数量，查询失败返回 -1
         """
-        db_path, table_name = self._find_msg_table(username)
-        if not db_path:
+        db_paths, table_name = self._find_msg_table(username)
+        if not db_paths:
             return -1
 
-        conn = sqlite3.connect(db_path)
-        try:
-            row = conn.execute(
-                f"SELECT COUNT(*) FROM [{table_name}] WHERE create_time > ?",
-                (since_ts,),
-            ).fetchone()
-            return row[0] if row else 0
-        except Exception:
-            return -1
-        finally:
-            conn.close()
+        total = 0
+        for db_path in db_paths:
+            conn = sqlite3.connect(db_path)
+            try:
+                row = conn.execute(
+                    f"SELECT COUNT(*) FROM [{table_name}] WHERE create_time > ?",
+                    (since_ts,),
+                ).fetchone()
+                total += row[0] if row else 0
+            except Exception:
+                pass
+            finally:
+                conn.close()
+        return total
 
     def get_messages(self, username, since_ts=0, limit=500):
         """获取群聊/私聊消息
@@ -415,34 +407,46 @@ class WeChatDB:
         self._load_contacts()
         is_group = "@chatroom" in username
 
-        db_path, table_name = self._find_msg_table(username)
-        if not db_path:
+        db_paths, table_name = self._find_msg_table(username)
+        if not db_paths:
             return []
 
-        conn = sqlite3.connect(db_path)
-        try:
-            if since_ts > 0:
-                rows = conn.execute(f"""
-                    SELECT local_type, create_time, message_content,
-                           WCDB_CT_message_content, status
-                    FROM [{table_name}]
-                    WHERE create_time > ?
-                    ORDER BY create_time ASC
-                    LIMIT ?
-                """, (since_ts, limit)).fetchall()
-            else:
-                rows = conn.execute(f"""
-                    SELECT local_type, create_time, message_content,
-                           WCDB_CT_message_content, status
-                    FROM [{table_name}]
-                    ORDER BY create_time DESC
-                    LIMIT ?
-                """, (limit,)).fetchall()
-                rows = list(reversed(rows))
-        except Exception:
+        # 从所有 db 收集行，合并后排序截断
+        all_rows = []
+        for db_path in db_paths:
+            conn = sqlite3.connect(db_path)
+            try:
+                if since_ts > 0:
+                    rows = conn.execute(f"""
+                        SELECT local_type, create_time, message_content,
+                               WCDB_CT_message_content, status
+                        FROM [{table_name}]
+                        WHERE create_time > ?
+                        ORDER BY create_time ASC
+                    """, (since_ts,)).fetchall()
+                else:
+                    rows = conn.execute(f"""
+                        SELECT local_type, create_time, message_content,
+                               WCDB_CT_message_content, status
+                        FROM [{table_name}]
+                        ORDER BY create_time DESC
+                        LIMIT ?
+                    """, (limit,)).fetchall()
+                all_rows.extend(rows)
+            except Exception:
+                pass
+            finally:
+                conn.close()
+
+        if not all_rows:
             return []
-        finally:
-            conn.close()
+
+        # 按时间排序，取最新的 limit 条
+        all_rows.sort(key=lambda r: r[1])  # r[1] = create_time
+        if since_ts > 0:
+            rows = all_rows[:limit]
+        else:
+            rows = all_rows[-limit:]
 
         # 私聊时，用联系人显示名标注对方消息
         contact_name = ""
@@ -685,9 +689,9 @@ class WeChatDB:
         total = len(usernames)
         print(f"[search] 正在定位 {total} 个群聊的消息表...")
         for i, username in enumerate(usernames):
-            db_path, table_name = self._find_msg_table(username)
-            if db_path:
-                table_cache[username] = (db_path, table_name)
+            db_paths, table_name = self._find_msg_table(username)
+            if db_paths:
+                table_cache[username] = (db_paths, table_name)
         print(f"[search] 定位完成，{len(table_cache)}/{total} 个群有消息表")
 
         keywords_lower = [kw.lower() for kw in keywords]
@@ -695,25 +699,29 @@ class WeChatDB:
         for i, username in enumerate(table_cache):
             is_group = "@chatroom" in username
             group_name = self._contacts.get(username, username)
-            db_path, table_name = table_cache[username]
+            db_paths, table_name = table_cache[username]
 
             print(f"[search]   ({i+1}/{len(table_cache)}) 搜索 {group_name}...")
 
-            conn = sqlite3.connect(db_path)
-            try:
-                rows = conn.execute(f"""
-                    SELECT local_type, create_time, message_content,
-                           WCDB_CT_message_content
-                    FROM [{table_name}]
-                    WHERE create_time >= ? AND create_time <= ?
-                    ORDER BY create_time ASC
-                    LIMIT ?
-                """, (int(start_ts), int(end_ts), limit_per_group)).fetchall()
-            except Exception as e:
-                print(f"[search]   ⚠ {group_name} 查询失败: {e}")
-                continue
-            finally:
-                conn.close()
+            rows = []
+            for db_path in db_paths:
+                conn = sqlite3.connect(db_path)
+                try:
+                    r = conn.execute(f"""
+                        SELECT local_type, create_time, message_content,
+                               WCDB_CT_message_content
+                        FROM [{table_name}]
+                        WHERE create_time >= ? AND create_time <= ?
+                        ORDER BY create_time ASC
+                    """, (int(start_ts), int(end_ts))).fetchall()
+                    rows.extend(r)
+                except Exception as e:
+                    print(f"[search]   ⚠ {group_name} 查询失败: {e}")
+                finally:
+                    conn.close()
+
+            # 多 DB 合并后按时间排序（上下文窗口依赖顺序）
+            rows.sort(key=lambda r: r[1])
 
             if not rows:
                 continue
@@ -1109,35 +1117,47 @@ class WeChatDB:
         self._load_contacts()
         is_group = "@chatroom" in username
 
-        db_path, table_name = self._find_msg_table(username)
-        if not db_path:
+        db_paths, table_name = self._find_msg_table(username)
+        if not db_paths:
             return []
 
-        conn = sqlite3.connect(db_path)
-        try:
-            if since_ts > 0:
-                rows = conn.execute(f"""
-                    SELECT local_type, create_time, message_content,
-                           WCDB_CT_message_content, status, packed_info_data
-                    FROM [{table_name}]
-                    WHERE local_type = 3 AND create_time > ?
-                    ORDER BY create_time ASC
-                    LIMIT ?
-                """, (since_ts, limit)).fetchall()
-            else:
-                rows = conn.execute(f"""
-                    SELECT local_type, create_time, message_content,
-                           WCDB_CT_message_content, status, packed_info_data
-                    FROM [{table_name}]
-                    WHERE local_type = 3
-                    ORDER BY create_time DESC
-                    LIMIT ?
-                """, (limit,)).fetchall()
-                rows = list(reversed(rows))
-        except Exception:
+        rows = []
+        for db_path in db_paths:
+            conn = sqlite3.connect(db_path)
+            try:
+                if since_ts > 0:
+                    r = conn.execute(f"""
+                        SELECT local_type, create_time, message_content,
+                               WCDB_CT_message_content, status, packed_info_data
+                        FROM [{table_name}]
+                        WHERE local_type = 3 AND create_time > ?
+                        ORDER BY create_time ASC
+                    """, (since_ts,)).fetchall()
+                else:
+                    r = conn.execute(f"""
+                        SELECT local_type, create_time, message_content,
+                               WCDB_CT_message_content, status, packed_info_data
+                        FROM [{table_name}]
+                        WHERE local_type = 3
+                        ORDER BY create_time DESC
+                    """).fetchall()
+                rows.extend(r)
+            except Exception:
+                pass
+            finally:
+                conn.close()
+
+        if not rows:
             return []
-        finally:
-            conn.close()
+
+        # 多 DB 合并后排序 + 截断
+        if since_ts > 0:
+            rows.sort(key=lambda r: r[1])
+        else:
+            rows.sort(key=lambda r: r[1], reverse=True)
+        rows = rows[:limit]
+        if since_ts <= 0:
+            rows = list(reversed(rows))
 
         contact_name = ""
         if not is_group:
@@ -1208,35 +1228,47 @@ class WeChatDB:
         self._load_contacts()
         is_group = "@chatroom" in username
 
-        db_path, table_name = self._find_msg_table(username)
-        if not db_path:
+        db_paths, table_name = self._find_msg_table(username)
+        if not db_paths:
             return []
 
-        conn = sqlite3.connect(db_path)
-        try:
-            if since_ts > 0:
-                rows = conn.execute(f"""
-                    SELECT local_type, create_time, message_content,
-                           WCDB_CT_message_content, status
-                    FROM [{table_name}]
-                    WHERE local_type = 47 AND create_time > ?
-                    ORDER BY create_time ASC
-                    LIMIT ?
-                """, (since_ts, limit)).fetchall()
-            else:
-                rows = conn.execute(f"""
-                    SELECT local_type, create_time, message_content,
-                           WCDB_CT_message_content, status
-                    FROM [{table_name}]
-                    WHERE local_type = 47
-                    ORDER BY create_time DESC
-                    LIMIT ?
-                """, (limit,)).fetchall()
-                rows = list(reversed(rows))
-        except Exception:
+        rows = []
+        for db_path in db_paths:
+            conn = sqlite3.connect(db_path)
+            try:
+                if since_ts > 0:
+                    r = conn.execute(f"""
+                        SELECT local_type, create_time, message_content,
+                               WCDB_CT_message_content, status
+                        FROM [{table_name}]
+                        WHERE local_type = 47 AND create_time > ?
+                        ORDER BY create_time ASC
+                    """, (since_ts,)).fetchall()
+                else:
+                    r = conn.execute(f"""
+                        SELECT local_type, create_time, message_content,
+                               WCDB_CT_message_content, status
+                        FROM [{table_name}]
+                        WHERE local_type = 47
+                        ORDER BY create_time DESC
+                    """).fetchall()
+                rows.extend(r)
+            except Exception:
+                pass
+            finally:
+                conn.close()
+
+        if not rows:
             return []
-        finally:
-            conn.close()
+
+        # 多 DB 合并后排序 + 截断
+        if since_ts > 0:
+            rows.sort(key=lambda r: r[1])
+        else:
+            rows.sort(key=lambda r: r[1], reverse=True)
+        rows = rows[:limit]
+        if since_ts <= 0:
+            rows = list(reversed(rows))
 
         contact_name = ""
         if not is_group:
