@@ -103,6 +103,7 @@ class WeChatDB:
         self._contacts = None  # {username: display_name}
         self._contacts_full = None  # [{username, nick_name, remark}]
         self._nick_to_remark = {}  # {nick_name: remark} reverse mapping for nickname→alias lookup
+        self._emoticon_map = None  # {md5: {cdn_url, aes_key, thumb_url}}
         os.makedirs(self.CACHE_DIR, exist_ok=True)
         try:
             os.chmod(self.CACHE_DIR, 0o700)
@@ -115,6 +116,7 @@ class WeChatDB:
         self._contacts = None
         self._contacts_full = None
         self._nick_to_remark = {}
+        self._emoticon_map = None
         # Clean up cached files on disk
         if os.path.isdir(self.CACHE_DIR):
             import glob as _glob
@@ -223,6 +225,31 @@ class WeChatDB:
         self._contacts = names
         self._contacts_full = full
         self._nick_to_remark = nick_to_remark
+
+    def _load_emoticon_db(self):
+        """Lazy-load emoticon.db to build md5→CDN URL mapping for stickers."""
+        if self._emoticon_map is not None:
+            return
+        self._emoticon_map = {}
+        path = self._get_decrypted_db(os.path.join("emoticon", "emoticon.db"))
+        if not path:
+            return
+        try:
+            conn = sqlite3.connect(path)
+            rows = conn.execute(
+                "SELECT md5, cdn_url, aes_key, thumb_url"
+                " FROM kNonStoreEmoticonTable"
+            ).fetchall()
+            for md5, cdn, aes, thumb in rows:
+                if md5 and cdn:
+                    self._emoticon_map[md5] = {
+                        "cdn_url": cdn.replace("&amp;", "&"),
+                        "aes_key": aes or "",
+                        "thumb_url": (thumb or "").replace("&amp;", "&"),
+                    }
+            conn.close()
+        except Exception:
+            pass
 
     def get_groups(self, include_unnamed=False):
         """Get all group chats list.
@@ -1296,6 +1323,15 @@ class WeChatDB:
                 "height": height,
                 "msg_type": "emoji",
             })
+
+        # Backfill CDN URLs from emoticon.db for stickers missing cdnurl
+        self._load_emoticon_db()
+        for msg in messages:
+            if not msg.get("cdnurl") and msg["md5"] in self._emoticon_map:
+                info = self._emoticon_map[msg["md5"]]
+                msg["cdnurl"] = info["cdn_url"]
+                if not msg.get("aeskey"):
+                    msg["aeskey"] = info["aes_key"]
 
         return messages
 
