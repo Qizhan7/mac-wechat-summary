@@ -727,7 +727,7 @@ class WeChatSummaryApp(rumps.App):
         has_summarized = bool(last_summary) or bookmark_ts > 0
 
         if has_summarized:
-            display_time = last_summary or datetime.fromtimestamp(bookmark_ts).strftime("%m-%d %H:%M")
+            display_time = last_summary or datetime.fromtimestamp(bookmark_ts).strftime("%Y-%m-%d %H:%M")
             title += f"  ⏱{display_time}"
             new_count = self.db.count_messages_since(username, bookmark_ts)
             if new_count > 0:
@@ -951,7 +951,7 @@ class WeChatSummaryApp(rumps.App):
             else:
                 since_ts = get_bookmark(username)
                 if since_ts > 0:
-                    since_str = datetime.fromtimestamp(since_ts).strftime("%m-%d %H:%M")
+                    since_str = datetime.fromtimestamp(since_ts).strftime("%Y-%m-%d %H:%M")
                     print(f"[summary] {group_name}: 读取 {since_str} 之后的新消息...")
                 else:
                     print(f"[summary] {group_name}: 首次总结，读取最近消息...")
