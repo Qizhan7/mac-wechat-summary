@@ -998,7 +998,7 @@ class WeChatSummaryApp(rumps.App):
                 "text": summary,
                 "file": summary_file,
                 "msg_count": msg_count,
-                "time": datetime.now().strftime("%m-%d %H:%M"),
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
             self._run_on_main(self._refresh_menu_after_summary)
 
@@ -1122,7 +1122,7 @@ class WeChatSummaryApp(rumps.App):
             except Exception:
                 group_name = f[:-4]
 
-            time_str = datetime.fromtimestamp(mtime).strftime("%m-%d %H:%M")
+            time_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
             display = f"{group_name}（{time_str}）"
             summaries.append({"path": path, "display": display, "mtime": mtime})
 
@@ -1383,7 +1383,7 @@ class WeChatSummaryApp(rumps.App):
                     set_bookmark(g["username"], g["last_msg_ts"])
 
             # 记录分组总结时间
-            now_str = datetime.now().strftime("%m-%d %H:%M")
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
             set_group_summary_time(group_name, now_str)
 
             # 保存总结
@@ -1395,7 +1395,7 @@ class WeChatSummaryApp(rumps.App):
                 "text": summary,
                 "file": summary_file,
                 "msg_count": total_msgs,
-                "time": datetime.now().strftime("%m-%d %H:%M"),
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
             self._run_on_main(self._refresh_menu_after_summary)
 
@@ -1765,7 +1765,7 @@ class WeChatSummaryApp(rumps.App):
                 "text": summary if use_ai else f"搜索「{kw_str}」命中 {total_count} 条消息",
                 "file": filepath,
                 "msg_count": total_count,
-                "time": datetime.now().strftime("%m-%d %H:%M"),
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
             self._run_on_main(self._refresh_menu_after_summary)
 

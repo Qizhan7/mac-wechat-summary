@@ -298,7 +298,7 @@ class WeChatDB:
                 "unread": unread or 0,
                 "summary": summary or "",
                 "timestamp": ts,
-                "time_str": datetime.fromtimestamp(ts).strftime("%m-%d %H:%M"),
+                "time_str": datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M"),
             })
 
         return sessions
@@ -493,7 +493,7 @@ class WeChatDB:
                 "raw_sender_id": raw_sender_id,
                 "text": text,
                 "timestamp": create_time,
-                "time_str": datetime.fromtimestamp(create_time).strftime("%m-%d %H:%M"),
+                "time_str": datetime.fromtimestamp(create_time).strftime("%Y-%m-%d %H:%M"),
                 "type": local_type,
             })
 
@@ -620,7 +620,7 @@ class WeChatDB:
                         "text": text,
                         "text_lower": text.lower(),
                         "timestamp": create_time,
-                        "time_str": datetime.fromtimestamp(create_time).strftime("%m-%d %H:%M"),
+                        "time_str": datetime.fromtimestamp(create_time).strftime("%Y-%m-%d %H:%M"),
                         "group_name": group_name,
                     })
 
@@ -748,7 +748,7 @@ class WeChatDB:
                     "text": text,
                     "text_lower": text.lower(),
                     "timestamp": create_time,
-                    "time_str": datetime.fromtimestamp(create_time).strftime("%m-%d %H:%M"),
+                    "time_str": datetime.fromtimestamp(create_time).strftime("%Y-%m-%d %H:%M"),
                     "group_name": group_name,
                 })
 
@@ -1185,7 +1185,7 @@ class WeChatDB:
             messages.append({
                 "sender": sender,
                 "timestamp": create_time,
-                "time_str": datetime.fromtimestamp(create_time).strftime("%m-%d %H:%M"),
+                "time_str": datetime.fromtimestamp(create_time).strftime("%Y-%m-%d %H:%M"),
                 "file_hash": file_hash,
                 "thumb_path": thumb_path,
                 "image_path": image_path,
