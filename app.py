@@ -953,9 +953,11 @@ class WeChatSummaryApp(rumps.App):
                 if since_ts > 0:
                     since_str = datetime.fromtimestamp(since_ts).strftime("%Y-%m-%d %H:%M")
                     print(f"[summary] {group_name}: 读取 {since_str} 之后的新消息...")
+                    msg_limit = 500
                 else:
-                    print(f"[summary] {group_name}: 首次总结，读取最近消息...")
-                messages = self.db.get_messages(username, since_ts=since_ts, limit=500)
+                    print(f"[summary] {group_name}: 首次总结，读取最近 300 条消息...")
+                    msg_limit = 300
+                messages = self.db.get_messages(username, since_ts=since_ts, limit=msg_limit)
             if not messages:
                 _notify("微信总结", group_name, "没有新消息")
                 return
