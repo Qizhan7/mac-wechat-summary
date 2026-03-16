@@ -1347,11 +1347,6 @@ class WeChatDB:
             if msg["type"] in (10000, 10002):
                 continue  # Skip system messages and recalls
             sender = msg.get("sender", "")
-            if sender and show_group_nickname:
-                raw_id = msg.get("raw_sender_id", "")
-                # If raw ID differs from display name, append raw ID for identification
-                if raw_id and raw_id != sender:
-                    sender = f"{sender}({raw_id})"
             if sender:
                 lines.append(f"[{msg['time_str']}] {sender}: {msg['text']}")
             else:
