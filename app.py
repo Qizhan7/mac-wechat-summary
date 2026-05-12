@@ -16,7 +16,7 @@ import rumps
 try:
     from AppKit import (NSApplication, NSAlert, NSTextField, NSView, NSObject,
                         NSButton, NSImage, NSFont, NSScrollView, NSTextView,
-                        NSBezelBorder)
+                        NSBezelBorder, NSPopUpButton)
     import objc
     _HAS_APPKIT = True
 except ImportError:
@@ -797,6 +797,7 @@ class WeChatSummaryApp(rumps.App):
                 item = rumps.MenuItem(title)
                 item.add(rumps.MenuItem("📝 总结新消息", callback=self._make_summary_callback(session)))
                 item.add(rumps.MenuItem("🔧 自定义总结…", callback=self._make_custom_summary_callback(session)))
+                item.add(rumps.MenuItem("📅 按天总结…", callback=self._make_daily_summary_callback(session)))
                 self.menu.insert_after("🔍 关键词搜索", item)
         elif not groups:
             self.menu.insert_after("🔍 关键词搜索", rumps.MenuItem("📎 (暂无群聊)"))
@@ -949,6 +950,263 @@ class WeChatSummaryApp(rumps.App):
             traceback.print_exc()
         finally:
             self._release_front()
+
+    def _make_daily_summary_callback(self, session):
+        def callback(_):
+            if self._summarizing:
+                _notify("微信总结", "请等待", "正在总结中...")
+                return
+            self._delayed_run(self._show_daily_summary_dialog, session)
+        return callback
+
+    def _show_daily_summary_dialog(self, session):
+        import calendar
+        group_name = session["name"]
+        now = datetime.now()
+        self._bring_to_front()
+        try:
+            if not _HAS_APPKIT:
+                clicked, text = self._input_dialog(
+                    "按天总结",
+                    f"群聊：{group_name}\n\n输入日期，格式 YYYY-MM-DD\n例如：2026-05-12",
+                    default_text=now.strftime("%Y-%m-%d"), ok="开始总结",
+                )
+                if clicked and text.strip():
+                    try:
+                        target_date = datetime.strptime(text.strip(), "%Y-%m-%d")
+                    except ValueError:
+                        _notify("微信总结", "日期格式错误", "请使用 YYYY-MM-DD 格式")
+                        return
+                    threading.Thread(
+                        target=self._daily_summarize,
+                        args=(session, target_date),
+                        daemon=True,
+                    ).start()
+                return
+
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_("📅 按天总结")
+            alert.setInformativeText_(f"群聊：{group_name}\n选择要总结的日期")
+            if os.path.isfile(APP_ICON_PNG):
+                _icon = NSImage.alloc().initWithContentsOfFile_(APP_ICON_PNG)
+                if _icon:
+                    alert.setIcon_(_icon)
+            alert.addButtonWithTitle_("开始总结")
+            alert.addButtonWithTitle_("取消")
+
+            view = NSView.alloc().initWithFrame_(((0, 0), (320, 32)))
+
+            lbl_y = NSTextField.alloc().initWithFrame_(((0, 5), (30, 22)))
+            lbl_y.setStringValue_("年")
+            lbl_y.setBezeled_(False)
+            lbl_y.setEditable_(False)
+            lbl_y.setDrawsBackground_(False)
+            view.addSubview_(lbl_y)
+
+            years = [str(y) for y in range(now.year - 2, now.year + 1)]
+            popup_year = NSPopUpButton.alloc().initWithFrame_pullsDown_(((28, 5), (75, 22)), False)
+            popup_year.addItemsWithTitles_(years)
+            popup_year.selectItemWithTitle_(str(now.year))
+            view.addSubview_(popup_year)
+
+            lbl_m = NSTextField.alloc().initWithFrame_(((110, 5), (30, 22)))
+            lbl_m.setStringValue_("月")
+            lbl_m.setBezeled_(False)
+            lbl_m.setEditable_(False)
+            lbl_m.setDrawsBackground_(False)
+            view.addSubview_(lbl_m)
+
+            months = [str(m) for m in range(1, 13)]
+            popup_month = NSPopUpButton.alloc().initWithFrame_pullsDown_(((138, 5), (55, 22)), False)
+            popup_month.addItemsWithTitles_(months)
+            popup_month.selectItemWithTitle_(str(now.month))
+            view.addSubview_(popup_month)
+
+            lbl_d = NSTextField.alloc().initWithFrame_(((200, 5), (30, 22)))
+            lbl_d.setStringValue_("日")
+            lbl_d.setBezeled_(False)
+            lbl_d.setEditable_(False)
+            lbl_d.setDrawsBackground_(False)
+            view.addSubview_(lbl_d)
+
+            days = [str(d) for d in range(1, 32)]
+            popup_day = NSPopUpButton.alloc().initWithFrame_pullsDown_(((228, 5), (55, 22)), False)
+            popup_day.addItemsWithTitles_(days)
+            popup_day.selectItemWithTitle_(str(now.day))
+            view.addSubview_(popup_day)
+
+            alert.setAccessoryView_(view)
+
+            result = alert.runModal()
+            if result != 1000:
+                return
+
+            year = int(str(popup_year.titleOfSelectedItem()))
+            month = int(str(popup_month.titleOfSelectedItem()))
+            day = int(str(popup_day.titleOfSelectedItem()))
+
+            max_day = calendar.monthrange(year, month)[1]
+            if day > max_day:
+                _notify("微信总结", "日期无效", f"{year}年{month}月只有{max_day}天")
+                return
+
+            target_date = datetime(year, month, day)
+            if target_date > now:
+                _notify("微信总结", "日期无效", "不能选择未来的日期")
+                return
+
+            threading.Thread(
+                target=self._daily_summarize,
+                args=(session, target_date),
+                daemon=True,
+            ).start()
+
+        except Exception:
+            traceback.print_exc()
+        finally:
+            self._release_front()
+
+    def _daily_summarize(self, session, target_date):
+        """Summarize messages for a single day, chunked by 300 messages."""
+        from datetime import timedelta
+
+        CHUNK_SIZE = 300
+
+        self._summarizing = True
+        self._set_status(ICON_LOADING)
+
+        try:
+            username = session["username"]
+            group_name = session["name"]
+            date_str = target_date.strftime("%Y-%m-%d")
+
+            day_start_ts = target_date.timestamp()
+            day_end_ts = (target_date + timedelta(days=1)).timestamp()
+
+            print(f"[daily] {group_name}: 按天总结 {date_str}")
+
+            messages = self.db.get_messages(username, since_ts=day_start_ts, limit=10000)
+            messages = [m for m in messages if m["timestamp"] < day_end_ts]
+
+            if not messages:
+                _notify("微信总结", group_name, f"{date_str} 没有消息")
+                return
+
+            msg_count = len(messages)
+            start_time = messages[0]["time_str"]
+            end_time = messages[-1]["time_str"]
+
+            if not self.ai:
+                try:
+                    self.ai = create_provider(self.config)
+                except Exception as e:
+                    _notify("微信总结", "AI 未配置", str(e))
+                    if "Key" in str(e):
+                        self._set_api_key(None)
+                    return
+
+            chunks = [messages[i:i + CHUNK_SIZE] for i in range(0, len(messages), CHUNK_SIZE)]
+            total_chunks = len(chunks)
+            print(f"[daily] {group_name}: {date_str} 共 {msg_count} 条消息，分 {total_chunks} 段总结")
+
+            _notify("微信总结", f"📅 {group_name}",
+                    f"{date_str} · {msg_count}条消息 · 分{total_chunks}段，开始总结...")
+
+            summaries = []
+            for idx, chunk in enumerate(chunks, 1):
+                chunk_start = chunk[0]["time_str"]
+                chunk_end = chunk[-1]["time_str"]
+                chunk_text = self.db.format_messages_for_ai(
+                    chunk,
+                    show_group_nickname=self.config.get("show_group_nickname", True),
+                )
+
+                start_short = chunk_start.split(" ", 1)[-1]
+                end_short = chunk_end.split(" ", 1)[-1]
+                print(f"[daily]   第 {idx}/{total_chunks} 段: {len(chunk)} 条 ({start_short} ~ {end_short})，调用 AI...")
+                _notify("微信总结", f"📅 {group_name}",
+                        f"正在总结第 {idx}/{total_chunks} 段（{start_short} ~ {end_short}）...")
+
+                prompt = self.ai.build_prompt(
+                    group_name=group_name,
+                    messages_text=chunk_text,
+                    start_time=chunk_start,
+                    end_time=chunk_end,
+                    msg_count=len(chunk),
+                )
+                try:
+                    summary = self.ai.summarize(prompt)
+                except Exception as e:
+                    print(f"[daily]   ✗ 第 {idx} 段失败: {e}")
+                    summary = f"（此段总结失败：{e}）"
+                summaries.append({
+                    "text": summary,
+                    "start": chunk_start,
+                    "end": chunk_end,
+                    "count": len(chunk),
+                })
+
+            full_summary = self._combine_daily_summaries(summaries, total_chunks)
+
+            summary_file = self._save_daily_summary(
+                group_name, full_summary, msg_count, date_str,
+                start_time, end_time, total_chunks,
+            )
+
+            self._last_summary = {
+                "group": f"📅 {group_name}",
+                "text": full_summary,
+                "file": summary_file,
+                "msg_count": msg_count,
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            }
+            self._run_on_main(self._refresh_menu_after_summary)
+
+            _notify("微信总结", f"📅 {group_name}",
+                    f"{date_str} · {msg_count}条消息 · {total_chunks}段已总结")
+            print(f"[daily] ✓ {group_name} {date_str} 总结完成")
+
+            subprocess.run(["open", summary_file])
+            self._set_status(ICON_DONE)
+
+        except Exception as e:
+            _notify("微信总结", "按天总结失败", str(e))
+            traceback.print_exc()
+            self._set_status(ICON_ERROR)
+        finally:
+            self._summarizing = False
+
+    def _combine_daily_summaries(self, summaries, total_chunks):
+        if total_chunks == 1:
+            return summaries[0]["text"]
+        parts = []
+        for s in summaries:
+            start_short = s["start"].split(" ", 1)[-1]
+            end_short = s["end"].split(" ", 1)[-1]
+            header = f"## {start_short} ~ {end_short}（{s['count']}条消息）\n"
+            parts.append(header + s["text"])
+        return "\n\n".join(parts)
+
+    def _save_daily_summary(self, group_name, summary, msg_count, date_str,
+                            start_time, end_time, chunk_count):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in group_name)
+        filename = f"daily_{safe_name}_{date_str}_{timestamp}.txt"
+        filepath = os.path.join(SUMMARY_DIR, filename)
+
+        chunk_note = f"（分 {chunk_count} 段总结）" if chunk_count > 1 else ""
+        header = (
+            f"{'='*50}\n"
+            f"  📅 按天总结：{group_name}\n"
+            f"  日期：{date_str}\n"
+            f"  {msg_count} 条消息 · {start_time} ~ {end_time}{chunk_note}\n"
+            f"  生成时间：{datetime.now().strftime('%Y年%m月%d日 %H:%M')}\n"
+            f"{'='*50}\n\n"
+        )
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(header + summary)
+        return filepath
 
     # ── Summary logic ────────────────────────────────────────
 
@@ -1188,6 +1446,7 @@ class WeChatSummaryApp(rumps.App):
                 chat_session = {"username": chat_user, "name": display, "is_group": True}
                 chat_item.add(rumps.MenuItem("📝 总结新消息", callback=self._make_summary_callback(chat_session)))
                 chat_item.add(rumps.MenuItem("🔧 自定义总结…", callback=self._make_custom_summary_callback(chat_session)))
+                chat_item.add(rumps.MenuItem("📅 按天总结…", callback=self._make_daily_summary_callback(chat_session)))
                 chat_item.add(rumps.separator)
                 chat_item.add(rumps.MenuItem("❌ 从分组移除", callback=self._make_remove_from_group_callback(grp_name, chat_user)))
                 grp_menu.add(chat_item)

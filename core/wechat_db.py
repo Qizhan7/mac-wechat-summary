@@ -211,6 +211,8 @@ class WeChatDB:
         try:
             for r in conn.execute("SELECT username, nick_name, remark FROM contact"):
                 uname, nick, remark = r
+                remark = (remark or "").strip()
+                nick = (nick or "").strip()
                 display = remark if remark else nick if nick else uname
                 names[uname] = display
                 full.append({"username": uname, "nick_name": nick or "", "remark": remark or ""})
@@ -504,16 +506,15 @@ class WeChatDB:
             text = content
             if is_group and ":\n" in content:
                 raw_sender_id, text = content.split(":\n", 1)
-                # Prefer wxid lookup (alias > nickname); fall back to nickname→alias reverse lookup
                 sender = self._contacts.get(raw_sender_id)
-                if not sender:
-                    sender = self._nick_to_remark.get(raw_sender_id, raw_sender_id)
+                if not sender or not sender.strip():
+                    sender = self._nick_to_remark.get(raw_sender_id)
+                if not sender or not sender.strip():
+                    sender = raw_sender_id
             elif not is_group:
-                # Private chat: status=2 = sent by me, status=3 = received
                 sender = "我" if status == 2 else contact_name
 
-            # In group chat, own messages lack wxid:\n prefix, sender will be empty
-            if is_group and not sender:
+            if is_group and (not sender or not sender.strip()):
                 sender = "您"
 
             # Clean XML special messages
@@ -1335,6 +1336,19 @@ class WeChatDB:
 
         return messages
 
+    @staticmethod
+    def _is_unresolved_id(sender, raw_sender_id):
+        """Check if sender is an unresolved ID (not a human-readable name)."""
+        if not sender or not raw_sender_id:
+            return False
+        if sender != raw_sender_id:
+            return False
+        if raw_sender_id.startswith("wxid_"):
+            return True
+        if re.fullmatch(r'[A-Za-z0-9_\-]+', raw_sender_id) and len(raw_sender_id) >= 8:
+            return True
+        return False
+
     def format_messages_for_ai(self, messages, show_group_nickname=False):
         """Format message list into text suitable for AI summary.
 
@@ -1342,11 +1356,24 @@ class WeChatDB:
             messages: List of messages.
             show_group_nickname: Whether to show group nickname (raw sender ID + known name).
         """
+        anon_map = {}
+        anon_counter = [0]
+
+        def get_display_name(msg):
+            sender = msg.get("sender", "")
+            raw_id = msg.get("raw_sender_id", "")
+            if sender and self._is_unresolved_id(sender, raw_id):
+                if raw_id not in anon_map:
+                    anon_counter[0] += 1
+                    anon_map[raw_id] = f"成员{anon_counter[0]}"
+                return anon_map[raw_id]
+            return sender
+
         lines = []
         for msg in messages:
             if msg["type"] in (10000, 10002):
-                continue  # Skip system messages and recalls
-            sender = msg.get("sender", "")
+                continue
+            sender = get_display_name(msg)
             if sender:
                 lines.append(f"[{msg['time_str']}] {sender}: {msg['text']}")
             else:
