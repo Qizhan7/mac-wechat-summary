@@ -4,7 +4,7 @@ macOS 菜单栏应用，一键总结微信群聊消息。
 
 直接读取本地微信数据库，调用 AI 生成群聊摘要，无需转发、无需截图。
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue) ![macOS](https://img.shields.io/badge/macOS-only-lightgrey) ![License](https://img.shields.io/badge/License-MIT-green)
+![Python](https://img.shields.io/badge/Python-3.10+-blue) ![macOS](https://img.shields.io/badge/macOS-only-lightgrey) ![License](https://img.shields.io/badge/License-AGPL--3.0-blue)
 
 ## 功能
 
@@ -115,4 +115,4 @@ macOS 菜单栏应用，一键总结微信群聊消息。
 
 ## License
 
-MIT
+[AGPL-3.0](LICENSE)
