@@ -4,6 +4,7 @@ import unittest
 
 from core.monitor import TopicMonitor, load_state, save_state
 from core.knowledge import KnowledgeStore
+from core.api_errors import is_retryable_ai_error, normalize_ai_error
 from core.wechat_db import _clean_msg_text
 
 
@@ -51,6 +52,18 @@ class TopicMonitorTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_ai_502_html_error_is_user_friendly_and_retryable(self):
+        error = """<html>
+<head><title>502 Bad Gateway</title></head>
+<body><center><h1>502 Bad Gateway</h1></center></body>
+</html>"""
+
+        self.assertTrue(is_retryable_ai_error(error))
+        self.assertEqual(
+            normalize_ai_error(error, "DeepSeek"),
+            "DeepSeek API 服务临时不可用，请稍后再试",
+        )
 
     def monitor(self, db, evaluator, now=1000, relation_evaluator=None, knowledge_store=None):
         return TopicMonitor(

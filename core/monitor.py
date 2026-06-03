@@ -18,6 +18,7 @@ from .knowledge import (
     normalize_relation,
 )
 from .keychain import load_key
+from .api_errors import is_retryable_ai_error, normalize_ai_error
 
 STATE_FILE = os.path.join(DATA_DIR, "monitor_state.json")
 HITS_DIR = os.path.join(DATA_DIR, "monitor_hits")
@@ -436,14 +437,23 @@ status_hint 可为 tracking、rumor、confirmed、disputed、resolved；不确�
 
         model = self.config.get("monitor_ai_model", "deepseek-v4-flash")
         client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com", timeout=60.0)
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1500,
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-        return response.choices[0].message.content
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=1500,
+                    temperature=0,
+                    response_format={"type": "json_object"},
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                last_error = e
+                if attempt >= 2 or not is_retryable_ai_error(e):
+                    break
+                time.sleep(1.5 * (attempt + 1))
+        raise RuntimeError(normalize_ai_error(last_error, "DeepSeek")) from None
 
     def _normalize_decision(self, decision, messages=None):
         if isinstance(decision, str):
