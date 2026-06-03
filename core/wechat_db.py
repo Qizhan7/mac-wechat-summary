@@ -457,13 +457,17 @@ class WeChatDB:
                 conn.close()
         return total
 
-    def get_messages(self, username, since_ts=0, limit=500):
+    def get_messages(self, username, since_ts=0, limit=500, page_forward=False):
         """Get group/private chat messages.
 
         Args:
             username: Username or group chat ID (xxx@chatroom).
             since_ts: Start timestamp (only get messages after this time).
             limit: Maximum number of messages.
+            page_forward: When True with since_ts, return the earliest next
+                page after the bookmark instead of the newest page. This is
+                used by "summarize new messages" so large backlogs are consumed
+                over multiple clicks without skipping messages.
 
         Returns:
             list[dict]: [{"sender": "name", "text": "content", "timestamp": ts, "type": int}, ...]
@@ -481,12 +485,13 @@ class WeChatDB:
             conn = sqlite3.connect(db_path)
             try:
                 if since_ts > 0:
+                    order = "ASC" if page_forward else "DESC"
                     rows = conn.execute(f"""
                         SELECT local_type, create_time, message_content,
                                WCDB_CT_message_content, status
                         FROM [{table_name}]
                         WHERE create_time > ?
-                        ORDER BY create_time DESC
+                        ORDER BY create_time {order}
                         LIMIT ?
                     """, (since_ts, limit * 2)).fetchall()
                 else:
@@ -508,7 +513,10 @@ class WeChatDB:
 
         # Sort by time, take the latest limit entries
         all_rows.sort(key=lambda r: r[1])  # r[1] = create_time
-        rows = all_rows[-limit:]
+        if since_ts > 0 and page_forward:
+            rows = all_rows[:limit]
+        else:
+            rows = all_rows[-limit:]
 
         # In private chat, label counterpart's messages with display name
         contact_name = ""

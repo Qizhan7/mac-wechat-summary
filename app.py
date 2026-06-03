@@ -1705,6 +1705,7 @@ class WeChatSummaryApp(rumps.App):
         try:
             username = session["username"]
             group_name = session["name"]
+            total_new_count = None
 
             if custom_minutes:
                 since_ts = time.time() - custom_minutes * 60
@@ -1720,7 +1721,14 @@ class WeChatSummaryApp(rumps.App):
                     print(f"[summary] {group_name}: 读取 {since_str} 之后的新消息...")
                 else:
                     print(f"[summary] {group_name}: 首次总结，读取最近消息...")
-                messages = self.db.get_messages(username, since_ts=since_ts, limit=500)
+                if since_ts > 0:
+                    total_new_count = self.db.count_messages_since(username, since_ts)
+                messages = self.db.get_messages(
+                    username,
+                    since_ts=since_ts,
+                    limit=500,
+                    page_forward=since_ts > 0,
+                )
             if not messages:
                 _notify("微信总结", group_name, "没有新消息")
                 return
@@ -1755,6 +1763,9 @@ class WeChatSummaryApp(rumps.App):
 
             # Update bookmark
             set_bookmark(username, messages[-1]["timestamp"])
+            remaining_count = 0
+            if total_new_count is not None:
+                remaining_count = self.db.count_messages_since(username, messages[-1]["timestamp"])
 
             # Save to file
             summary_file = self._save_summary(group_name, summary, msg_count, start_time, end_time)
@@ -1769,7 +1780,10 @@ class WeChatSummaryApp(rumps.App):
             }
             self._run_on_main(self._refresh_menu_after_summary)
 
-            _notify("微信总结", f"✅ {group_name}", f"{msg_count}条消息已总结")
+            done_message = f"{msg_count}条消息已总结"
+            if remaining_count > 0:
+                done_message += f"，仍有约{remaining_count}条，继续点「总结新消息」"
+            _notify("微信总结", f"✅ {group_name}", done_message)
             print(f"[summary] ✓ {group_name} 总结完成")
 
             # Auto-open summary file
@@ -2129,6 +2143,7 @@ class WeChatSummaryApp(rumps.App):
 
             groups_data = []
             total_msgs = 0
+            total_remaining = 0
 
             for username in chat_usernames:
                 self._check_cancelled()
@@ -2136,7 +2151,13 @@ class WeChatSummaryApp(rumps.App):
                 since_ts = get_bookmark(username)
 
                 batch_limit = self.config.get("batch_msg_limit", 100)
-                messages = self.db.get_messages(username, since_ts=since_ts, limit=batch_limit)
+                total_new_count = self.db.count_messages_since(username, since_ts) if since_ts > 0 else None
+                messages = self.db.get_messages(
+                    username,
+                    since_ts=since_ts,
+                    limit=batch_limit,
+                    page_forward=since_ts > 0,
+                )
 
                 if messages:
                     messages_text = self.db.format_messages_for_ai(messages, show_group_nickname=self.config.get("show_group_nickname", True))
@@ -2144,6 +2165,8 @@ class WeChatSummaryApp(rumps.App):
                     end_time = messages[-1]["time_str"]
                     msg_count = len(messages)
                     total_msgs += msg_count
+                    if total_new_count is not None:
+                        total_remaining += self.db.count_messages_since(username, messages[-1]["timestamp"])
 
                     groups_data.append({
                         "name": chat_name,
@@ -2200,7 +2223,10 @@ class WeChatSummaryApp(rumps.App):
             }
             self._run_on_main(self._refresh_menu_after_summary)
 
-            _notify("微信总结", f"✅ {group_name}", f"{len(groups_data)}个群 · {total_msgs}条消息已总结")
+            done_message = f"{len(groups_data)}个群 · {total_msgs}条消息已总结"
+            if total_remaining > 0:
+                done_message += f"，仍有约{total_remaining}条，继续点可接着总结"
+            _notify("微信总结", f"✅ {group_name}", done_message)
             print(f"[batch] ✓ 分组「{group_name}」总结完成")
 
             # Auto-open summary file
