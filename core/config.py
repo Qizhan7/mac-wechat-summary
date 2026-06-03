@@ -17,6 +17,21 @@ DEFAULT_CONFIG = {
     "ollama_model": "qwen3:8b",
     "auto_refresh_on_open": False,
     "ai_base_url": "",
+    "show_group_nickname": True,
+    "batch_msg_limit": 100,
+    "hide_inactive_months": 1,
+    "monitor_enabled": False,
+    "monitor_interval_minutes": 3,
+    "monitor_chat_username": "45716626449@chatroom",
+    "monitor_chat_display_name": "Claude恋爱技术群",
+    "monitor_topic": "",
+    "monitor_max_messages_per_run": 200,
+    "monitor_cooldown_minutes": 15,
+    "monitor_ai_provider": "deepseek",
+    "monitor_ai_model": "deepseek-v4-flash",
+    "monitor_knowledge_enabled": True,
+    "monitor_knowledge_db": os.path.join(DATA_DIR, "monitor_knowledge.db"),
+    "monitor_obsidian_root": os.path.join(DATA_DIR, "obsidian_knowledge"),
 }
 
 
@@ -33,14 +48,35 @@ def _sanitize_config(saved):
     if not isinstance(saved, dict):
         return cfg
 
-    for key in ("ai_provider", "ai_model", "ollama_url", "ollama_model", "ai_base_url"):
+    for key in (
+        "ai_provider", "ai_model", "ollama_url", "ollama_model",
+        "ai_base_url", "monitor_chat_username", "monitor_chat_display_name",
+        "monitor_topic", "monitor_ai_provider", "monitor_ai_model",
+        "monitor_knowledge_db", "monitor_obsidian_root",
+    ):
         value = saved.get(key)
         if isinstance(value, str):
             cfg[key] = value
 
-    auto_refresh = saved.get("auto_refresh_on_open")
-    if isinstance(auto_refresh, bool):
-        cfg["auto_refresh_on_open"] = auto_refresh
+    for key in (
+        "auto_refresh_on_open", "show_group_nickname", "monitor_enabled",
+        "monitor_knowledge_enabled",
+    ):
+        value = saved.get(key)
+        if isinstance(value, bool):
+            cfg[key] = value
+
+    int_ranges = {
+        "batch_msg_limit": (1, 5000),
+        "hide_inactive_months": (0, 60),
+        "monitor_interval_minutes": (1, 1440),
+        "monitor_max_messages_per_run": (1, 1000),
+        "monitor_cooldown_minutes": (0, 1440),
+    }
+    for key, (min_value, max_value) in int_ranges.items():
+        value = saved.get(key)
+        if isinstance(value, int) and min_value <= value <= max_value:
+            cfg[key] = value
 
     db_dir = saved.get("db_dir")
     if isinstance(db_dir, str):

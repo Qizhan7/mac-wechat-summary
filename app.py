@@ -68,6 +68,8 @@ from core.chat_groups import (
     add_chat_to_group, remove_chat_from_group, get_group_chats, get_chat_group,
     set_group_summary_time, get_group_summary_time,
 )
+from core.knowledge import KNOWLEDGE_DB, OBSIDIAN_ROOT, KnowledgeStore
+from core.monitor import HITS_DIR, MonitorConfigError, TopicMonitor, initialize_state_if_needed
 from ai.factory import create_provider
 
 # Summary history save directory
@@ -107,11 +109,51 @@ _ICON_PNG_MAP = {
 }
 
 
+def _notification_text(value, limit=700):
+    """Normalize notification text and keep the body small enough for macOS."""
+    text = "" if value is None else str(value)
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _notify_with_osascript(title, subtitle, message):
+    script = """
+on run argv
+    set notificationTitle to item 1 of argv
+    set notificationSubtitle to item 2 of argv
+    set notificationMessage to item 3 of argv
+    display notification notificationMessage with title notificationTitle subtitle notificationSubtitle sound name "default"
+end run
+"""
+    result = subprocess.run(
+        ["osascript", "-e", script, title, subtitle, message],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "osascript notification failed")
+
+
 def _notify(title, subtitle, message):
-    """Send notification safely, fall back to terminal output on failure."""
+    """Send notification safely, falling back when a backend is unavailable."""
+    title = _notification_text(title, 120) or "微信总结"
+    subtitle = _notification_text(subtitle, 180)
+    message = _notification_text(message, 700)
+
+    if sys.platform == "darwin":
+        try:
+            _notify_with_osascript(title, subtitle, message)
+            return
+        except Exception as e:
+            print(f"[notify] osascript failed: {e}")
+
     try:
         rumps.notification(title, subtitle, message)
-    except Exception:
+    except Exception as e:
+        print(f"[notify] rumps failed: {e}")
         print(f"[{title}] {subtitle}: {message}")
 
 
@@ -140,6 +182,9 @@ class WeChatSummaryApp(rumps.App):
         self._summarizing = False
         self._last_summary = None
         self._current_status = ICON_NORMAL
+        self._monitor_timer = None
+        self._monitor_lock = threading.Lock()
+        self._monitor_last_error = ""
 
         # Build menu
         self.menu = [
@@ -153,6 +198,7 @@ class WeChatSummaryApp(rumps.App):
             rumps.MenuItem("📋 最近总结"),
             rumps.separator,
             self._build_mcp_menu(),
+            self._build_monitor_menu(),
             self._build_settings_menu(),
             rumps.MenuItem("🔄 刷新数据源", callback=self.reextract_keys),
         ]
@@ -169,6 +215,8 @@ class WeChatSummaryApp(rumps.App):
         if _HAS_APPKIT:
             self._setup_delegate_timer = rumps.Timer(self._setup_menu_delegate, 1)
             self._setup_delegate_timer.start()
+
+        self._configure_monitor_timer()
 
         # Background initialization
         threading.Thread(target=self._init_background, daemon=True).start()
@@ -282,6 +330,369 @@ class WeChatSummaryApp(rumps.App):
         if "⚙️ 设置" in self.menu:
             del self.menu["⚙️ 设置"]
         self.menu.insert_before("🔄 刷新数据源", self._build_settings_menu())
+
+    def _rebuild_monitor_menu(self):
+        """Rebuild top-level monitor menu."""
+        if "🔔 关注推送" in self.menu:
+            del self.menu["🔔 关注推送"]
+        self.menu.insert_after("🔌 MCP 服务", self._build_monitor_menu())
+
+    # ── Topic monitor menu ────────────────────────────────────
+
+    def _build_monitor_menu(self):
+        """Build macOS notification monitor submenu."""
+        monitor = rumps.MenuItem("🔔 关注推送")
+
+        enabled = self.config.get("monitor_enabled", False)
+        interval = self.config.get("monitor_interval_minutes", 3)
+        chat_name = self.config.get("monitor_chat_display_name", "Claude恋爱技术群")
+        topic = self.config.get("monitor_topic", "").strip()
+        topic_label = topic[:24] + "..." if len(topic) > 24 else topic
+
+        status = "已开启" if enabled else "已暂停"
+        monitor.add(rumps.MenuItem(f"状态: {status} · 每 {interval} 分钟"))
+        monitor.add(rumps.MenuItem(f"群聊: {chat_name}"))
+        monitor.add(rumps.MenuItem(f"关注: {topic_label or '未设置'}"))
+        monitor.add(rumps.separator)
+
+        toggle_label = "⏸ 暂停监控" if enabled else "▶️ 启用监控"
+        monitor.add(rumps.MenuItem(toggle_label, callback=self._toggle_monitor))
+        monitor.add(rumps.MenuItem("📝 设置关注描述...", callback=self._set_monitor_topic))
+        monitor.add(rumps.MenuItem("⏱ 设置检查间隔...", callback=self._set_monitor_interval))
+        monitor.add(rumps.separator)
+        monitor.add(rumps.MenuItem("🧪 测试检查一次", callback=self._test_monitor_once))
+        monitor.add(rumps.MenuItem("📁 打开命中记录目录", callback=self._open_monitor_hits_dir))
+        monitor.add(rumps.MenuItem("📂 设置 Obsidian 仓库位置...", callback=self._set_monitor_obsidian_root))
+        monitor.add(rumps.MenuItem("🗂 打开知识库目录", callback=self._open_monitor_knowledge_dir))
+        monitor.add(rumps.MenuItem("🧹 整理去重 + 重导出...", callback=self._run_monitor_maintenance))
+        return monitor
+
+    def _configure_monitor_timer(self):
+        """Start/stop the monitor timer based on config."""
+        if self._monitor_timer:
+            try:
+                self._monitor_timer.stop()
+            except Exception:
+                pass
+            self._monitor_timer = None
+
+        if not self.config.get("monitor_enabled", False):
+            return
+        if not self.config.get("monitor_topic", "").strip():
+            return
+
+        try:
+            initialize_state_if_needed()
+        except Exception:
+            traceback.print_exc()
+
+        interval_seconds = max(1, self.config.get("monitor_interval_minutes", 3)) * 60
+        self._monitor_timer = rumps.Timer(self._on_monitor_timer, interval_seconds)
+        self._monitor_timer.start()
+        print(f"[monitor] 已启动，每 {interval_seconds // 60} 分钟检查一次")
+
+    def _on_monitor_timer(self, _):
+        """Timer callback: dispatch monitor work to a background thread."""
+        if not self.config.get("monitor_enabled", False) or not self.db:
+            return
+        threading.Thread(
+            target=self._run_monitor_check,
+            kwargs={"manual": False, "dry_run": False},
+            daemon=True,
+        ).start()
+
+    def _toggle_monitor(self, _):
+        current = self.config.get("monitor_enabled", False)
+        if current:
+            self.config["monitor_enabled"] = False
+            save_config(self.config)
+            self._configure_monitor_timer()
+            _notify("关注推送", "已暂停", "后台关注推送已暂停")
+            self._rebuild_monitor_menu()
+            return
+
+        if not self.config.get("monitor_topic", "").strip():
+            _notify("关注推送", "先设置关注描述", "写下你想盯什么内容后再开启")
+            self._delayed_run(self._show_monitor_topic_dialog, True)
+            return
+
+        self.config["monitor_enabled"] = True
+        save_config(self.config)
+        initialize_state_if_needed()
+        self._configure_monitor_timer()
+        _notify("关注推送", "已开启", "从当前时间开始，只检查新增消息")
+        self._rebuild_monitor_menu()
+
+    def _set_monitor_topic(self, _):
+        self._delayed_run(self._show_monitor_topic_dialog, False)
+
+    def _show_monitor_topic_dialog(self, enable_after=False):
+        self._bring_to_front()
+        try:
+            clicked, text = self._input_dialog(
+                "设置关注描述",
+                "描述你想被提醒的内容。\n例如：工作项目的新进展、AI 工具或模型的重要更新、生活安排中的时间提醒。",
+                default_text=self.config.get("monitor_topic", ""),
+                ok="保存",
+                width=460,
+            )
+            if not clicked:
+                return
+            topic = text.strip()
+            self.config["monitor_topic"] = topic
+            if enable_after and topic:
+                self.config["monitor_enabled"] = True
+                initialize_state_if_needed()
+            save_config(self.config)
+            self._configure_monitor_timer()
+            if topic:
+                _notify("关注推送", "关注描述已保存", "已按新描述监控新增消息")
+            else:
+                _notify("关注推送", "关注描述已清空", "设置描述前不会调用 AI 检查")
+            self._rebuild_monitor_menu()
+        finally:
+            self._release_front()
+
+    def _set_monitor_interval(self, _):
+        self._delayed_run(self._show_monitor_interval_dialog)
+
+    def _show_monitor_interval_dialog(self):
+        self._bring_to_front()
+        try:
+            clicked, text = self._input_dialog(
+                "设置检查间隔",
+                "输入分钟数（1-1440）。建议这个高流量群先用 3 分钟。",
+                default_text=str(self.config.get("monitor_interval_minutes", 3)),
+                ok="保存",
+                width=260,
+            )
+            if not clicked:
+                return
+            try:
+                minutes = int(text.strip())
+            except ValueError:
+                _notify("关注推送", "输入错误", "请输入正整数分钟数")
+                return
+            if minutes < 1 or minutes > 1440:
+                _notify("关注推送", "输入错误", "请输入 1-1440 之间的分钟数")
+                return
+            self.config["monitor_interval_minutes"] = minutes
+            save_config(self.config)
+            self._configure_monitor_timer()
+            _notify("关注推送", "检查间隔已更新", f"每 {minutes} 分钟检查一次")
+            self._rebuild_monitor_menu()
+        finally:
+            self._release_front()
+
+    def _test_monitor_once(self, _):
+        if not self.db:
+            _notify("关注推送", "还没初始化", "请等微信数据加载完成后再测试")
+            return
+        if not self.config.get("monitor_topic", "").strip():
+            _notify("关注推送", "先设置关注描述", "测试前需要知道你想盯什么")
+            self._delayed_run(self._show_monitor_topic_dialog, False)
+            return
+        threading.Thread(
+            target=self._run_monitor_check,
+            kwargs={"manual": True, "dry_run": True},
+            daemon=True,
+        ).start()
+
+    def _run_monitor_check(self, manual=False, dry_run=False):
+        if not self._monitor_lock.acquire(blocking=False):
+            if manual:
+                _notify("关注推送", "正在检查", "上一轮检查还没结束")
+            return
+
+        try:
+            monitor = TopicMonitor(self.db, self.config)
+            result = monitor.check_once(dry_run=dry_run)
+            self._handle_monitor_result(result, manual=manual, dry_run=dry_run)
+            self._monitor_last_error = ""
+        except MonitorConfigError as e:
+            self._handle_monitor_error(str(e), manual)
+        except Exception as e:
+            traceback.print_exc()
+            self._handle_monitor_error(f"检查失败: {e}", manual)
+        finally:
+            self._monitor_lock.release()
+
+    def _handle_monitor_result(self, result, manual=False, dry_run=False):
+        status = result.get("status")
+        decision = result.get("decision") or {}
+
+        if status == "notified":
+            _notify("关注推送", result.get("title", "发现关注内容"),
+                    result.get("summary", "有值得关注的新消息"))
+            hit_path = result.get("hit_path", "")
+            knowledge_path = result.get("knowledge_path", "")
+            print(f"[monitor] 命中: {hit_path} 知识库: {knowledge_path}")
+            return
+
+        if status == "matched":
+            relation = result.get("relation")
+            prefix = f"测试命中/{relation}" if relation else "测试命中（不写记录）"
+            _notify("关注推送", f"{prefix}: {result.get('title', '发现关注内容')}",
+                    result.get("summary", "有值得关注的新消息"))
+            return
+
+        if not manual:
+            print(f"[monitor] {status}: {result.get('message', '')}")
+            return
+
+        messages = {
+            "initialized": ("已开始监控", "正式检查会从当前时间之后的新消息开始"),
+            "missing_topic": ("还没设置关注描述", "设置后才会调用 AI 检查"),
+            "no_messages": ("没有新消息", "这次测试窗口里没有新增内容"),
+            "no_match": ("未命中", f"检查了 {result.get('message_count', 0)} 条，没有值得提醒的内容"),
+            "cooldown": ("命中但在冷却中", "同一主题短时间内不会重复提醒"),
+            "duplicate": ("重复内容，已静默记录", "知识库判断没有新线索，这次不推送"),
+        }
+        title, message = messages.get(status, ("检查完成", str(result)))
+        _notify("关注推送", title, message)
+
+    def _handle_monitor_error(self, message, manual=False):
+        print(f"[monitor] {message}")
+        if manual or message != self._monitor_last_error:
+            _notify("关注推送", "检查失败", message[:180])
+        self._monitor_last_error = message
+
+    def _open_monitor_hits_dir(self, _):
+        os.makedirs(HITS_DIR, exist_ok=True)
+        subprocess.run(["open", HITS_DIR])
+
+    def _open_monitor_knowledge_dir(self, _):
+        root = self.config.get("monitor_obsidian_root") or OBSIDIAN_ROOT
+        os.makedirs(root, exist_ok=True)
+        subprocess.run(["open", root])
+
+    def _set_monitor_obsidian_root(self, _):
+        self._delayed_run(self._show_monitor_obsidian_root_dialog)
+
+    def _show_monitor_obsidian_root_dialog(self):
+        self._bring_to_front()
+        try:
+            current = self.config.get("monitor_obsidian_root") or OBSIDIAN_ROOT
+            clicked, text = self._input_dialog(
+                "设置 Obsidian 仓库位置",
+                "粘贴你的 Obsidian 仓库（vault）路径。\n"
+                "命中笔记会写到该目录下的「关注推送」子文件夹，\n"
+                "在 Obsidian 里就能用 Bases、关系图谱自动整理。\n\n"
+                "留空可恢复默认位置。",
+                default_text=current,
+                ok="保存",
+                width=480,
+            )
+            if not clicked:
+                return
+            path = os.path.expanduser(text.strip())
+            if not path:
+                self.config["monitor_obsidian_root"] = OBSIDIAN_ROOT
+                save_config(self.config)
+                _notify("关注推送", "已恢复默认知识库位置", OBSIDIAN_ROOT)
+                self._rebuild_monitor_menu()
+                return
+            parent = os.path.dirname(path.rstrip("/")) or "/"
+            if not os.path.isdir(path) and not os.path.isdir(parent):
+                _notify("关注推送", "路径无效", "目录及其上层都不存在，请检查后重试")
+                return
+            try:
+                os.makedirs(path, exist_ok=True)
+            except OSError as e:
+                _notify("关注推送", "无法创建目录", str(e)[:180])
+                return
+            self.config["monitor_obsidian_root"] = path
+            save_config(self.config)
+            _notify("关注推送", "知识库位置已更新", path)
+            self._rebuild_monitor_menu()
+        finally:
+            self._release_front()
+
+    def _knowledge_ready(self):
+        if not self.config.get("monitor_knowledge_enabled", False):
+            return False
+        db = self.config.get("monitor_knowledge_db") or KNOWLEDGE_DB
+        return os.path.exists(os.path.expanduser(db))
+
+    def _run_monitor_maintenance(self, _):
+        if not self._knowledge_ready():
+            _notify("关注推送", "暂无知识库", "命中并记录一些内容后再来整理")
+            return
+        threading.Thread(target=self._maintenance_scan, daemon=True).start()
+
+    def _maintenance_scan(self):
+        if not self._monitor_lock.acquire(blocking=False):
+            _notify("关注推送", "正在忙", "监控或上一次整理还没结束，稍后再试")
+            return
+        try:
+            store = KnowledgeStore.from_config(self.config)
+            plan = store.run_maintenance(dry_run=True)
+        except Exception as e:
+            traceback.print_exc()
+            self._monitor_lock.release()
+            _notify("关注推送", "整理失败", str(e)[:180])
+            return
+        self._run_on_main(self._maintenance_confirm, plan)
+
+    def _maintenance_confirm(self, plan):
+        confirmed = False
+        try:
+            groups = plan.get("duplicate_groups", [])
+            total = plan.get("total_topics", 0)
+            removed = plan.get("removed_count", 0)
+            lines = []
+            for g in groups[:8]:
+                merged = "、".join(g.get("merged", []))
+                lines.append(f"· {merged} → {g.get('primary', '')}")
+            if len(groups) > 8:
+                lines.append(f"…… 另有 {len(groups) - 8} 组")
+
+            if groups:
+                head = (
+                    f"发现 {plan['group_count']} 组疑似重复，"
+                    f"{plan['merge_note_count']} 篇将合并成 {plan['group_count']} 篇。\n"
+                    f"随后把全部 {total - removed} 篇重新导出到当前 Obsidian 仓库"
+                    f"（回填双链 / event_count）。\n\n"
+                    + "\n".join(lines)
+                    + "\n\n这会删除被合并的笔记，确定整理吗？"
+                )
+                ok_label = "开始整理"
+            else:
+                head = (
+                    "没有发现重复主题。\n"
+                    f"要把全部 {total} 篇笔记重新导出到当前 Obsidian 仓库吗？\n"
+                    "（回填双链 / event_count，也可用于迁移到新仓库）"
+                )
+                ok_label = "重新导出"
+
+            self._bring_to_front()
+            try:
+                confirmed = self._confirm_dialog("整理知识库", head, ok=ok_label)
+            finally:
+                self._release_front()
+        except Exception:
+            traceback.print_exc()
+            confirmed = False
+
+        if not confirmed:
+            self._monitor_lock.release()
+            _notify("关注推送", "已取消整理", "没有任何改动")
+            return
+        threading.Thread(target=self._maintenance_execute, daemon=True).start()
+
+    def _maintenance_execute(self):
+        try:
+            store = KnowledgeStore.from_config(self.config)
+            result = store.run_maintenance(dry_run=False)
+            _notify(
+                "关注推送", "整理完成",
+                f"合并 {result['removed_count']} 篇重复，重新导出 {result['reexport_count']} 篇",
+            )
+        except Exception as e:
+            traceback.print_exc()
+            _notify("关注推送", "整理失败", str(e)[:180])
+        finally:
+            self._monitor_lock.release()
 
     # ── MCP service menu ──────────────────────────────────────
 
