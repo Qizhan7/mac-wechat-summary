@@ -292,19 +292,19 @@ class TopicMonitorTests(unittest.TestCase):
             markdown = f.read()
         self.assertIn("https://example.com/codex?from=group", markdown)
 
-    def test_prompt_keeps_ai_play_and_multiple_candidate_guidance(self):
+    def test_prompt_keeps_ai_interaction_and_multiple_candidate_guidance(self):
         monitor = self.monitor(FakeDB([]), lambda *_: {"match": False})
-        messages = [msg(11, "4.8 加载 play skill 后能玩 BDSM 问卷测试")]
+        messages = [msg(11, "4.8 做互动问卷时加载了相关技能，并给出了偏好测试结果")]
         prompt = monitor._build_prompt(
             messages,
-            "2026-05-29 00:11 成员: 4.8 加载 play skill 后能玩 BDSM 问卷测试",
+            "2026-05-29 00:11 成员: 4.8 做互动问卷时加载了相关技能，并给出了偏好测试结果",
             self.config["monitor_topic"],
         )
 
         self.assertIn("多个候选都达到通知门槛", prompt)
-        self.assertIn("AI/agent/模型互动测试", prompt)
-        self.assertIn("BDSM、dom/sub", prompt)
-        self.assertIn("不要因为词汇敏感或语气玩笑而自动判为普通闲聊", prompt)
+        self.assertIn("AI/agent/模型互动实验", prompt)
+        self.assertIn("模型行为边界或偏好反馈", prompt)
+        self.assertIn("不要按单个敏感词字面过滤或命中", prompt)
 
     def _knowledge_decision(self, **overrides):
         data = {
