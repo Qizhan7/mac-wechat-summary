@@ -32,6 +32,99 @@ CATEGORY_ALIASES = (
     ("AI模型", ("模型", "安全", "发布传闻")),
 )
 
+OBSIDIAN_INDEX_CATEGORIES = (
+    "AI模型",
+    "工具更新",
+    "技术方法",
+    "AI实验",
+    "自建app",
+    "设计讨论",
+    "群内八卦",
+)
+
+OBSIDIAN_APP_CONFIG = {
+    "alwaysUpdateLinks": True,
+    "attachmentFolderPath": "附件",
+    "newFileLocation": "current",
+    "promptDelete": False,
+    "showInlineTitle": True,
+    "spellcheck": False,
+    "livePreview": True,
+}
+
+OBSIDIAN_CORE_PLUGINS = {
+    "file-explorer": True,
+    "global-search": True,
+    "switcher": True,
+    "graph": True,
+    "backlink": True,
+    "outgoing-link": True,
+    "tag-pane": True,
+    "page-preview": True,
+    "daily-notes": False,
+    "templates": False,
+    "note-composer": False,
+    "command-palette": True,
+    "slash-command": False,
+    "editor-status": False,
+    "markdown-importer": False,
+    "zk-prefixer": False,
+    "random-note": False,
+    "outline": True,
+    "word-count": False,
+    "slides": False,
+    "audio-recorder": False,
+    "workspaces": False,
+    "file-recovery": True,
+    "publish": False,
+    "sync": False,
+    "canvas": True,
+    "footnotes": False,
+    "properties": True,
+    "bookmarks": True,
+    "bases": True,
+    "webviewer": False,
+}
+
+OBSIDIAN_APPEARANCE_CONFIG = {
+    "accentColor": "#2563eb",
+    "baseFontSize": 15,
+    "nativeMenus": True,
+    "showViewHeader": True,
+}
+
+OBSIDIAN_HOME_NOTE = """# 微信关注推送知识库
+
+这里是微信关注推送自动沉淀的 Obsidian vault。新推送会继续写入 `关注推送/`，文件名和标题都带日期时间。
+
+## 快速入口
+
+- [[关注推送/AI模型]]
+- [[关注推送/工具更新]]
+- [[关注推送/技术方法]]
+- [[关注推送/AI实验]]
+- [[关注推送/自建app]]
+- [[关注推送/设计讨论]]
+- [[关注推送/群内八卦]]
+
+## 常用搜索
+
+```query
+path:"关注推送" link
+```
+
+```query
+path:"关注推送" 新功能 OR 更新 OR 教程 OR 实验 OR 修复
+```
+
+## 用法
+
+- 左侧文件夹：按分类看每条推送。
+- 顶部搜索：搜产品名、模型名、链接域名或关键词。
+- 右侧反向链接/出链：看这条内容和哪些条目有关。
+- Graph：点左侧网络图标，看话题之间的连接。
+"""
+
 
 def _json_dumps(value):
     return json.dumps(value or [], ensure_ascii=False)
@@ -135,6 +228,67 @@ def _obsidian_link(obsidian_path, title):
         return f"[[{title}]]"
     target = os.path.splitext(obsidian_path)[0]
     return f"[[{target}|{title}]]"
+
+
+def _is_default_obsidian_root(path):
+    return os.path.abspath(os.path.expanduser(path or "")) == os.path.abspath(OBSIDIAN_ROOT)
+
+
+def _write_json_if_missing(path, data):
+    if os.path.exists(path):
+        return False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    return True
+
+
+def _write_text_if_missing(path, text):
+    if os.path.exists(path):
+        return False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text.rstrip() + "\n")
+    return True
+
+
+def ensure_obsidian_vault(obsidian_root=OBSIDIAN_ROOT, include_app_config=None):
+    """Create the app-owned Obsidian vault shell without touching custom vault UI."""
+    root = os.path.expanduser(obsidian_root or OBSIDIAN_ROOT)
+    created = []
+
+    os.makedirs(root, exist_ok=True)
+    os.makedirs(os.path.join(root, OBSIDIAN_SUBDIR), exist_ok=True)
+
+    if include_app_config is None:
+        include_app_config = _is_default_obsidian_root(root)
+    if not include_app_config:
+        return {"root": root, "created": created}
+
+    obsidian_dir = os.path.join(root, ".obsidian")
+    if _write_json_if_missing(os.path.join(obsidian_dir, "app.json"), OBSIDIAN_APP_CONFIG):
+        created.append(".obsidian/app.json")
+    if _write_json_if_missing(os.path.join(obsidian_dir, "core-plugins.json"), OBSIDIAN_CORE_PLUGINS):
+        created.append(".obsidian/core-plugins.json")
+    if _write_json_if_missing(os.path.join(obsidian_dir, "appearance.json"), OBSIDIAN_APPEARANCE_CONFIG):
+        created.append(".obsidian/appearance.json")
+    if _write_text_if_missing(os.path.join(root, "首页.md"), OBSIDIAN_HOME_NOTE):
+        created.append("首页.md")
+
+    for category in OBSIDIAN_INDEX_CATEGORIES:
+        filename = f"{safe_path_part(category)}.md"
+        text = f"""# {category}
+
+```query
+path:"{OBSIDIAN_SUBDIR}/{category}"
+```
+"""
+        rel_path = os.path.join(OBSIDIAN_SUBDIR, filename)
+        if _write_text_if_missing(os.path.join(root, rel_path), text):
+            created.append(rel_path)
+
+    return {"root": root, "created": created}
 
 
 def build_message_hash(messages):
@@ -575,6 +729,7 @@ class KnowledgeStore:
 
         topic = self._topic_dict(topic_row)
         text = self._render_markdown(topic, events, relations)
+        ensure_obsidian_vault(self.obsidian_root)
         path = self.full_obsidian_path(topic["obsidian_path"])
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:

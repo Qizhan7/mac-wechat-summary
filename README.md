@@ -34,6 +34,16 @@ macOS 菜单栏应用，一键总结微信群聊消息。
 
 命中后会写入本地知识库目录，默认是 `~/.wechat-summary/obsidian_knowledge/关注推送/`。文件名示例：`2026-05-29 03-16 Claude 4.8 发布传闻.md`。
 
+### Obsidian 界面
+
+关注推送知识库是本地 Markdown vault，不需要 Obsidian 插件或 API。想用 Obsidian 的搜索、反向链接、Graph、Canvas、Bases，只需要：
+
+1. 安装 [Obsidian](https://obsidian.md/)
+2. 在 Obsidian 里打开默认 vault：`~/.wechat-summary/obsidian_knowledge`
+3. 如果已有自己的 vault，在菜单栏「关注推送 → 设置 Obsidian 仓库位置...」里填你的 vault 根目录
+
+程序会给默认 vault 自动生成基础 `.obsidian` 配置、`首页.md` 和分类索引；如果你设置到自己的 vault，只会写入 `关注推送/` 子目录，不覆盖你的 Obsidian 界面配置。
+
 ### MCP Server — 让你的 AI Agent 直接读微信
 
 接上 MCP Server 后，Claude Code、Cursor、OpenClaw 等 AI Agent 可以直接读取聊天记录，不需要截图发给 AI 做 OCR：
@@ -57,6 +67,7 @@ macOS 菜单栏应用，一键总结微信群聊消息。
 - Python 3.10+
 - 微信桌面版（已登录）
 - 至少一个 AI 服务的 API Key（通义千问、DeepSeek 等）
+- Obsidian 可选；只有想用图谱、反向链接和 vault 界面时需要安装
 
 ### 快速开始
 
@@ -121,6 +132,7 @@ macOS 菜单栏应用，一键总结微信群聊消息。
 ## 致谢
 
 - [ylytdeng/wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt) — 微信数据库解密方案参考，本项目在此基础上进行了改进和扩展
+- [Obsidian](https://obsidian.md/) — 本地 Markdown vault 与知识图谱工作流灵感来源
 - [Sue](https://github.com/smoonsue) — 测试与反馈
 
 ## License

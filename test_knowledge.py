@@ -4,7 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from core.knowledge import KnowledgeStore, safe_path_part
+from core.knowledge import KnowledgeStore, ensure_obsidian_vault, safe_path_part
 
 
 def msg(ts, sender, text):
@@ -80,6 +80,33 @@ class KnowledgeStoreTests(unittest.TestCase):
         self.assertIn("## 当前摘要", md)
         self.assertIn("## 时间线", md)
         self.assertIn("Claude 4.8 可能今天发布", md)
+
+    def test_ensure_obsidian_vault_seeds_default_files_without_overwrite(self):
+        seeded = ensure_obsidian_vault(self.obsidian_root, include_app_config=True)
+
+        self.assertIn(".obsidian/app.json", seeded["created"])
+        self.assertTrue(os.path.exists(os.path.join(self.obsidian_root, ".obsidian", "app.json")))
+        self.assertTrue(os.path.exists(os.path.join(self.obsidian_root, "首页.md")))
+        self.assertTrue(os.path.exists(os.path.join(self.obsidian_root, "关注推送", "AI模型.md")))
+
+        home = os.path.join(self.obsidian_root, "首页.md")
+        with open(home, "w", encoding="utf-8") as f:
+            f.write("# custom\n")
+
+        seeded_again = ensure_obsidian_vault(self.obsidian_root, include_app_config=True)
+
+        self.assertEqual(seeded_again["created"], [])
+        with open(home, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "# custom\n")
+
+    def test_custom_obsidian_vault_only_creates_monitor_subdir_by_default(self):
+        custom_root = os.path.join(self.tmp.name, "custom-vault")
+
+        ensure_obsidian_vault(custom_root)
+
+        self.assertTrue(os.path.isdir(os.path.join(custom_root, "关注推送")))
+        self.assertFalse(os.path.exists(os.path.join(custom_root, ".obsidian", "app.json")))
+        self.assertFalse(os.path.exists(os.path.join(custom_root, "首页.md")))
 
     def test_duplicate_event_only_records_event(self):
         first = self.store.apply_event(candidate(), self.messages, self.config, {"relation": "new"})

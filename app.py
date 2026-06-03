@@ -68,7 +68,7 @@ from core.chat_groups import (
     add_chat_to_group, remove_chat_from_group, get_group_chats, get_chat_group,
     set_group_summary_time, get_group_summary_time,
 )
-from core.knowledge import KNOWLEDGE_DB, OBSIDIAN_ROOT, KnowledgeStore
+from core.knowledge import KNOWLEDGE_DB, OBSIDIAN_ROOT, KnowledgeStore, ensure_obsidian_vault
 from core.monitor import HITS_DIR, MonitorConfigError, TopicMonitor, initialize_state_if_needed
 from ai.factory import create_provider
 
@@ -565,7 +565,7 @@ class WeChatSummaryApp(rumps.App):
 
     def _open_monitor_knowledge_dir(self, _):
         root = self.config.get("monitor_obsidian_root") or OBSIDIAN_ROOT
-        os.makedirs(root, exist_ok=True)
+        ensure_obsidian_vault(root)
         subprocess.run(["open", root])
 
     def _set_monitor_obsidian_root(self, _):
@@ -591,6 +591,7 @@ class WeChatSummaryApp(rumps.App):
             if not path:
                 self.config["monitor_obsidian_root"] = OBSIDIAN_ROOT
                 save_config(self.config)
+                ensure_obsidian_vault(OBSIDIAN_ROOT)
                 _notify("关注推送", "已恢复默认知识库位置", OBSIDIAN_ROOT)
                 self._rebuild_monitor_menu()
                 return
@@ -605,6 +606,7 @@ class WeChatSummaryApp(rumps.App):
                 return
             self.config["monitor_obsidian_root"] = path
             save_config(self.config)
+            ensure_obsidian_vault(path)
             _notify("关注推送", "知识库位置已更新", path)
             self._rebuild_monitor_menu()
         finally:
