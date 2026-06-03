@@ -88,5 +88,64 @@ class WeChatImageDecoderTests(unittest.TestCase):
         self.assertIsNone(decode_wechat_image_data(data, ""))
 
 
+class WeChatMediaPagingTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.tmp.name, "media.db")
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("""
+                CREATE TABLE Chat_media (
+                    local_type INTEGER,
+                    create_time INTEGER,
+                    message_content TEXT,
+                    WCDB_CT_message_content INTEGER,
+                    status INTEGER,
+                    packed_info_data BLOB
+                )
+            """)
+            for ts in range(101, 111):
+                conn.execute(
+                    "INSERT INTO Chat_media VALUES (?, ?, ?, ?, ?, ?)",
+                    (3, ts, "sender:\n<msg><img /></msg>", None, 0, None),
+                )
+            for ts in range(201, 211):
+                md5 = f"{ts:032x}"[-32:]
+                content = (
+                    "sender:\n"
+                    f'<msg><emoji md5="{md5}" cdnurl="https://example.com/{ts}.png" '
+                    'fromusername="sender" /></msg>'
+                )
+                conn.execute(
+                    "INSERT INTO Chat_media VALUES (?, ?, ?, ?, ?, ?)",
+                    (47, ts, content, None, 0, None),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.db = object.__new__(WeChatDB)
+        self.db._contacts = {"sender": "成员"}
+        self.db._nick_to_remark = {}
+        self.db._emoticon_map = {}
+        self.db._load_contacts = lambda: None
+        self.db._load_emoticon_db = lambda: None
+        self.db._find_msg_table = lambda username: ([self.db_path], "Chat_media")
+        self.db._find_image_file = lambda *args, **kwargs: None
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_image_messages_since_returns_latest_page_chronological(self):
+        messages = self.db.get_image_messages("room@chatroom", since_ts=100, limit=3)
+
+        self.assertEqual([m["timestamp"] for m in messages], [108, 109, 110])
+
+    def test_emoji_messages_since_returns_latest_page_chronological(self):
+        messages = self.db.get_emoji_messages("room@chatroom", since_ts=200, limit=3)
+
+        self.assertEqual([m["timestamp"] for m in messages], [208, 209, 210])
+
+
 if __name__ == "__main__":
     unittest.main()

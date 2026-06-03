@@ -1289,14 +1289,10 @@ class WeChatDB:
         if not rows:
             return []
 
-        # Sort + truncate after multi-DB merge
-        if since_ts > 0:
-            rows.sort(key=lambda r: r[1])
-        else:
-            rows.sort(key=lambda r: r[1], reverse=True)
-        rows = rows[:limit]
-        if since_ts <= 0:
-            rows = list(reversed(rows))
+        # Sort + truncate after multi-DB merge: return the latest page in
+        # chronological order, regardless of whether a time window is provided.
+        rows.sort(key=lambda r: r[1])
+        rows = rows[-limit:]
 
         contact_name = ""
         if not is_group:
@@ -1402,14 +1398,10 @@ class WeChatDB:
         if not rows:
             return []
 
-        # Sort + truncate after multi-DB merge
-        if since_ts > 0:
-            rows.sort(key=lambda r: r[1])
-        else:
-            rows.sort(key=lambda r: r[1], reverse=True)
-        rows = rows[:limit]
-        if since_ts <= 0:
-            rows = list(reversed(rows))
+        # Sort + truncate after multi-DB merge: return the latest page in
+        # chronological order, regardless of whether a time window is provided.
+        rows.sort(key=lambda r: r[1])
+        rows = rows[-limit:]
 
         contact_name = ""
         if not is_group:
