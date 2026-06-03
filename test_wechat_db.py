@@ -1,8 +1,12 @@
 import os
 import sqlite3
+import struct
 import tempfile
 import unittest
 
+from Crypto.Cipher import AES
+
+from core.image_decoder import decode_wechat_image_data, detect_mime
 from core.wechat_db import WeChatDB
 
 
@@ -55,6 +59,33 @@ class WeChatDBPagingTests(unittest.TestCase):
 
         self.assertEqual([m["timestamp"] for m in first], [101, 102, 103])
         self.assertEqual([m["timestamp"] for m in second], [104, 105, 106])
+
+
+class WeChatImageDecoderTests(unittest.TestCase):
+    def test_v2_image_data_decodes_with_saved_key(self):
+        key = b"1234567890abcdef"
+        image = b"\xff\xd8\xff\xe0" + b"fake-jpeg-body" * 10
+        aes_size = len(image)
+        aligned = aes_size + (16 - aes_size % 16) % 16
+        padded = image + b"\x00" * (aligned - aes_size)
+        encrypted = AES.new(key, AES.MODE_ECB).encrypt(padded)
+        data = (
+            b"\x07\x08\x56\x32\x08\x07"
+            + struct.pack("<I", aes_size)
+            + struct.pack("<I", 0)
+            + b"\x01"
+            + encrypted
+        )
+
+        decoded = decode_wechat_image_data(data, key.hex())
+
+        self.assertEqual(decoded, image)
+        self.assertEqual(detect_mime(decoded), "image/jpeg")
+
+    def test_v2_image_data_without_key_returns_none(self):
+        data = b"\x07\x08\x56\x32\x08\x07" + b"\x00" * 32
+
+        self.assertIsNone(decode_wechat_image_data(data, ""))
 
 
 if __name__ == "__main__":

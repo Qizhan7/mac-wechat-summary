@@ -28,6 +28,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from mcp.server.fastmcp import FastMCP
 
+from core.config import load_config
+from core.image_decoder import (
+    decode_wechat_image_data,
+    detect_mime,
+    is_v2_image_data,
+)
+
 mcp = FastMCP(
     "wechat-summary",
     instructions=(
@@ -49,7 +56,6 @@ def _get_db():
     """Lazy-load WeChatDB singleton; auto-rebuild when keys file is updated."""
     global _db, _keys_mtime
 
-    from core.config import load_config
     from core.key_extractor import get_cached_keys
     from core.wechat_db import WeChatDB
 
@@ -128,6 +134,7 @@ def get_status() -> str:
     ai_provider = cfg.get("ai_provider", "未配置")
     ai_model = cfg.get("ai_model", "默认")
     lines.append(f"AI 提供者: {ai_provider} ({ai_model})")
+    lines.append(f"图片 V2 密钥: {'✅ 已配置' if cfg.get('image_aes_key') else '❌ 未配置'}")
 
     try:
         db = _get_db()
@@ -293,10 +300,7 @@ def get_chat_images(
         # Merge, sort by time, take limit entries
         all_msgs = image_msgs + emoji_msgs
         all_msgs.sort(key=lambda m: m["timestamp"])
-        if since_ts > 0:
-            all_msgs = all_msgs[:limit]
-        else:
-            all_msgs = all_msgs[-limit:]
+        all_msgs = all_msgs[-limit:]
 
         if not all_msgs:
             return [TextContent(
@@ -367,8 +371,20 @@ def get_chat_images(
                     ))
                     continue
 
+                raw_image_data = image_data
+                image_data = decode_wechat_image_data(
+                    raw_image_data,
+                    load_config().get("image_aes_key"),
+                )
+                if image_data is None and is_v2_image_data(raw_image_data):
+                    results.append(TextContent(
+                        type="text",
+                        text="  (新版 V2 加密图片，需要先捕获 image_aes_key)",
+                    ))
+                    continue
+
             # Detect MIME type
-            mime_type = _detect_mime(image_data)
+            mime_type = detect_mime(image_data)
             if not mime_type:
                 results.append(TextContent(
                     type="text",
@@ -415,17 +431,7 @@ def get_chat_images(
 
 def _detect_mime(data: bytes) -> str | None:
     """Detect image data MIME type."""
-    if not data or len(data) < 4:
-        return None
-    if data[:2] == b"\xff\xd8":
-        return "image/jpeg"
-    if data[:4] == b"\x89PNG":
-        return "image/png"
-    if data[:4] == b"GIF8":
-        return "image/gif"
-    if data[:4] == b"RIFF" and len(data) > 12 and data[8:12] == b"WEBP":
-        return "image/webp"
-    return None
+    return detect_mime(data)
 
 
 def _download_emoji(msg: dict, timeout: int = 10) -> bytes | None:

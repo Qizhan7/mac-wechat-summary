@@ -17,6 +17,7 @@ DEFAULT_CONFIG = {
     "ollama_model": "qwen3:8b",
     "auto_refresh_on_open": False,
     "ai_base_url": "",
+    "image_aes_key": "",
     "show_group_nickname": True,
     "batch_msg_limit": 100,
     "hide_inactive_months": 1,
@@ -55,6 +56,7 @@ def _sanitize_config(saved):
         "ai_base_url", "monitor_chat_username", "monitor_chat_display_name",
         "monitor_topic", "monitor_ai_provider", "monitor_ai_model",
         "monitor_knowledge_db", "monitor_obsidian_root",
+        "image_aes_key",
     ):
         value = saved.get(key)
         if isinstance(value, str):
