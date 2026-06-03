@@ -230,6 +230,40 @@ class KnowledgeStoreTests(unittest.TestCase):
         self.assertEqual(result["removed_count"], 1)
         self.assertEqual(len(self.rows("topics")), 2)
 
+    def test_maintenance_does_not_merge_broadly_related_ai_topics(self):
+        self.store.apply_event(
+            candidate(
+                title="Claude 4.8 思考链提取技巧讨论",
+                topic_key="claude-48-thinking-chain",
+                summary="1. 【03:16】群里讨论 Claude 4.8 的思考链提取方法。",
+                entities=["Claude", "4.8"],
+                key_facts=["群里讨论 Claude 4.8 思考链提取方法"],
+                links=[],
+            ),
+            self.messages,
+            self.config,
+            {"relation": "new"},
+        )
+        self.store.apply_event(
+            candidate(
+                title="Claude 4.6 vs 4.8 实际体验讨论",
+                topic_key="claude-46-vs-48-experience",
+                summary="1. 【03:20】群里比较 Claude 4.6 和 4.8 的实际体验。",
+                entities=["Claude", "4.8"],
+                key_facts=["群里比较 Claude 4.6 和 4.8 的实际体验"],
+                links=[],
+            ),
+            self.messages,
+            self.config,
+            {"relation": "new"},
+        )
+
+        result = self.store.run_maintenance(dry_run=True)
+
+        self.assertEqual(result["group_count"], 0)
+        self.assertEqual(result["removed_count"], 0)
+        self.assertEqual(result["reexport_count"], 2)
+
     def test_safe_filename_handles_chinese_emoji_slash_and_long_title(self):
         unsafe = "Claude/Opus: 4.8 🚀 " + "很长" * 60
         result = self.store.apply_event(

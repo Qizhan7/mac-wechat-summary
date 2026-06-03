@@ -711,24 +711,63 @@ class KnowledgeStore:
             conn.close()
 
     @staticmethod
-    def _topic_similarity(a, b):
-        score = 0
+    def _title_tokens(text):
+        """Extract enough signal for maintenance without merging broad AI topics."""
+        text = (text or "").lower()
+        tokens = set()
+        for token in re.findall(r"[0-9a-z][0-9a-z_.-]{1,}", text):
+            tokens.add(token.strip("._-"))
+        for chunk in re.findall(r"[一-鿿]{2,}", text):
+            tokens.add(chunk)
+            for i in range(len(chunk) - 1):
+                tokens.add(chunk[i:i + 2])
+
+        weak = {
+            "ai", "claude", "codex", "openai", "deepseek", "模型", "讨论",
+            "分享", "技巧", "群友", "新功能", "新版本", "消息", "体验",
+            "工具", "链接", "发布", "传闻", "实际", "热聊",
+        }
+        return {t for t in tokens if t and t not in weak}
+
+    @classmethod
+    def _title_overlap(cls, a, b):
+        a_tokens = cls._title_tokens(a)
+        b_tokens = cls._title_tokens(b)
+        if not a_tokens or not b_tokens:
+            return 0, 0
+        shared = a_tokens & b_tokens
+        return len(shared), len(shared) / min(len(a_tokens), len(b_tokens))
+
+    @classmethod
+    def _topic_similarity(cls, a, b):
         ak = (a.get("topic_key") or "").strip().lower()
         bk = (b.get("topic_key") or "").strip().lower()
         if ak and ak == bk:
-            score += 100
+            return 100
+
+        at = (a.get("title") or "").strip().lower()
+        bt = (b.get("title") or "").strip().lower()
+        if at and at == bt:
+            return 100
+
+        shared_title_count, title_overlap = cls._title_overlap(at, bt)
         a_links = {x.lower() for x in a.get("links") or []}
         b_links = {x.lower() for x in b.get("links") or []}
-        score += len(a_links & b_links) * 60
-        a_ent = {x.lower() for x in a.get("entities") or []}
-        b_ent = {x.lower() for x in b.get("entities") or []}
-        score += len(a_ent & b_ent) * 20
+        shared_links = a_links & b_links
+        if shared_links and (title_overlap >= 0.35 or shared_title_count >= 2):
+            return 95
 
-        def tokens(text):
-            return set(re.findall(r"[0-9A-Za-z_]{3,}|[一-鿿]{2,}", (text or "").lower()))
+        a_facts = " ".join(a.get("key_facts") or []).lower()
+        b_facts = " ".join(b.get("key_facts") or []).lower()
+        fact_overlap_count, fact_overlap = cls._title_overlap(a_facts, b_facts)
+        if title_overlap >= 0.75 and shared_title_count >= 3:
+            return 90
+        if title_overlap >= 0.6 and shared_title_count >= 2 and fact_overlap >= 0.45:
+            return 90
+        if shared_links and fact_overlap_count >= 2:
+            return 90
 
-        score += len(tokens(a.get("title")) & tokens(b.get("title"))) * 10
-        return score
+        return 0
 
     @staticmethod
     def _pick_primary(group):
@@ -737,7 +776,7 @@ class KnowledgeStore:
             key=lambda t: (-t["event_count"], t["first_seen"], t["topic_id"]),
         )[0]
 
-    def find_duplicate_groups(self, threshold=60):
+    def find_duplicate_groups(self, threshold=85):
         """Group topics that are near-certainly the same thing (union-find)."""
         topics = self.list_topics()
         n = len(topics)
@@ -826,7 +865,7 @@ class KnowledgeStore:
             conn.close()
         return count
 
-    def run_maintenance(self, dry_run=False, threshold=60):
+    def run_maintenance(self, dry_run=False, threshold=85):
         """Merge near-duplicate topics, then re-export all notes to the vault."""
         if self.read_only:
             raise RuntimeError("knowledge store is read-only")
