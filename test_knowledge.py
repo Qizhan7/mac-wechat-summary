@@ -73,7 +73,10 @@ class KnowledgeStoreTests(unittest.TestCase):
         self.assertTrue(os.path.exists(result["knowledge_path"]))
         with open(result["knowledge_path"], encoding="utf-8") as f:
             md = f.read()
+        basename = os.path.basename(result["knowledge_path"])
+        self.assertTrue(basename.startswith("2026-05-29 03-16 "))
         self.assertIn("category: \"AI模型\"", md)
+        self.assertIn("# 2026-05-29 03:16 · Claude 4.8 发布传闻", md)
         self.assertIn("## 当前摘要", md)
         self.assertIn("## 时间线", md)
         self.assertIn("Claude 4.8 可能今天发布", md)
@@ -166,7 +169,10 @@ class KnowledgeStoreTests(unittest.TestCase):
         with open(second["knowledge_path"], encoding="utf-8") as f:
             md = f.read()
         self.assertIn("## 相关主题", md)
-        self.assertIn("[[Claude 4.8 发布传闻]]", md)
+        self.assertIn(
+            "[[关注推送/AI模型/2026-05-29 03-16 Claude 4.8 发布传闻|Claude 4.8 发布传闻]]",
+            md,
+        )
         self.assertIn("event_count:", md)
 
     def test_link_related_skips_missing_and_self_ids(self):
@@ -292,6 +298,8 @@ class KnowledgeStoreTests(unittest.TestCase):
         self.assertEqual(topics["self-app-feature"]["category"], "自建app")
         self.assertIn(os.path.join("关注推送", "技术方法"), topics["claude-48-thinking-tips"]["obsidian_path"])
         self.assertIn(os.path.join("关注推送", "自建app"), topics["self-app-feature"]["obsidian_path"])
+        self.assertIn("2026-05-29 03-16", topics["claude-48-thinking-tips"]["obsidian_path"])
+        self.assertIn("2026-05-29 03-16", topics["self-app-feature"]["obsidian_path"])
         self.assertEqual(result["removed_empty_dirs"], 2)
 
     def test_maintenance_does_not_merge_broadly_related_ai_topics(self):

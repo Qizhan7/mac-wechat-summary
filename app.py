@@ -655,9 +655,12 @@ class WeChatSummaryApp(rumps.App):
 
             category_lines = []
             for change in category_changes[:10]:
-                category_lines.append(
-                    f"· {change.get('from', '')} → {change.get('to', '')}：{change.get('title', '')}"
-                )
+                if change.get("reason") == "title":
+                    category_lines.append(f"· 标题补时间：{change.get('title', '')}")
+                else:
+                    category_lines.append(
+                        f"· {change.get('from', '')} → {change.get('to', '')}：{change.get('title', '')}"
+                    )
             if len(category_changes) > 10:
                 category_lines.append(f"…… 另有 {len(category_changes) - 10} 篇")
 
@@ -665,7 +668,7 @@ class WeChatSummaryApp(rumps.App):
                 head = (
                     f"发现 {plan['group_count']} 组疑似重复，"
                     f"{plan['merge_note_count']} 篇将合并成 {plan['group_count']} 篇。\n"
-                    f"另有 {len(category_changes)} 篇会归并到稳定分类文件夹。\n"
+                    f"另有 {len(category_changes)} 篇会归并分类或补齐时间标题。\n"
                     f"随后把全部 {total - removed} 篇重新导出到当前 Obsidian 仓库"
                     f"（回填双链 / event_count）。\n\n"
                     + "\n".join(lines)
@@ -676,12 +679,12 @@ class WeChatSummaryApp(rumps.App):
             elif category_changes:
                 head = (
                     "没有发现重复主题。\n"
-                    f"发现 {len(category_changes)} 篇笔记可以归并到更少的分类文件夹，"
+                    f"发现 {len(category_changes)} 篇笔记可以归并分类或补齐时间标题，"
                     f"随后把全部 {total} 篇重新导出到当前 Obsidian 仓库。\n\n"
                     + "\n".join(category_lines)
-                    + "\n\n这会移动这些笔记到归并后的文件夹，确定整理吗？"
+                    + "\n\n这会移动这些笔记到归并后的文件夹或带时间的新文件名，确定整理吗？"
                 )
-                ok_label = "归并并重导出"
+                ok_label = "整理并重导出"
             else:
                 head = (
                     "没有发现重复主题。\n"

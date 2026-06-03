@@ -110,6 +110,33 @@ def _truncate(value, limit):
     return text[: limit - 1].rstrip() + "…"
 
 
+def _note_time(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = re.search(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}", text)
+    if match:
+        return match.group(0)
+    return text[:16]
+
+
+def _path_time(value):
+    return _note_time(value).replace(":", "-")
+
+
+def _note_heading(topic):
+    when = _note_time(topic.get("first_seen", ""))
+    title = topic["title"]
+    return f"{when} · {title}" if when else title
+
+
+def _obsidian_link(obsidian_path, title):
+    if not obsidian_path:
+        return f"[[{title}]]"
+    target = os.path.splitext(obsidian_path)[0]
+    return f"[[{target}|{title}]]"
+
+
 def build_message_hash(messages):
     h = hashlib.sha256()
     for msg in messages:
@@ -403,7 +430,8 @@ class KnowledgeStore:
             ),
         )
         topic_id = int(cursor.lastrowid)
-        obsidian_path = self._unique_obsidian_path(conn, topic_id, category, title)
+        first_seen = ctx["window_start"] or now_text
+        obsidian_path = self._unique_obsidian_path(conn, topic_id, category, title, first_seen=first_seen)
         conn.execute("UPDATE topics SET obsidian_path = ? WHERE topic_id = ?", (obsidian_path, topic_id))
         self._upsert_fts(conn, topic_id)
         return topic_id
@@ -536,7 +564,7 @@ class KnowledgeStore:
         ).fetchall()
         relations = conn.execute(
             """
-            SELECT r.relation, r.reason, t.title
+            SELECT r.relation, r.reason, t.title, t.obsidian_path
             FROM relations r
             JOIN topics t ON t.topic_id = r.target_topic_id
             WHERE r.source_topic_id = ?
@@ -571,7 +599,7 @@ class KnowledgeStore:
             _frontmatter_list("tags", tags),
             "---",
             "",
-            f"# {title}",
+            f"# {_note_heading(topic)}",
             "",
             "## 当前摘要",
             topic["summary"] or "（暂无摘要）",
@@ -598,7 +626,9 @@ class KnowledgeStore:
         for rel in relations:
             if rel["title"] == title and rel["relation"] in {"updates", "duplicate_of", "contradicts"}:
                 continue
-            relation_lines.append(f"- {rel['relation']}:: [[{rel['title']}]]")
+            relation_lines.append(
+                f"- {rel['relation']}:: {_obsidian_link(rel['obsidian_path'], rel['title'])}"
+            )
         if relation_lines:
             lines.extend(relation_lines)
         else:
@@ -632,18 +662,20 @@ class KnowledgeStore:
 
         return "\n".join(lines).rstrip() + "\n"
 
-    def _unique_obsidian_path(self, conn, topic_id, category, title):
+    def _unique_obsidian_path(self, conn, topic_id, category, title, first_seen="", current_path=""):
         category_part = safe_path_part(category)
+        time_part = safe_path_part(_path_time(first_seen), "", max_len=20)
         title_part = safe_path_part(title, "关注内容", max_len=90)
-        rel_path = os.path.join(OBSIDIAN_SUBDIR, category_part, f"{title_part}.md")
+        filename = f"{time_part} {title_part}".strip()
+        rel_path = os.path.join(OBSIDIAN_SUBDIR, category_part, f"{filename}.md")
         existing = conn.execute(
             "SELECT topic_id FROM topics WHERE obsidian_path = ? AND topic_id != ?",
             (rel_path, topic_id),
         ).fetchone()
         full_path = self.full_obsidian_path(rel_path)
-        if existing is None and not os.path.exists(full_path):
+        if existing is None and (not os.path.exists(full_path) or rel_path == current_path):
             return rel_path
-        return os.path.join(OBSIDIAN_SUBDIR, category_part, f"{title_part}-{topic_id}.md")
+        return os.path.join(OBSIDIAN_SUBDIR, category_part, f"{filename}-{topic_id}.md")
 
     def _topic_dict(self, row, score=None):
         data = {
@@ -861,19 +893,35 @@ class KnowledgeStore:
         return primary_id, removed_paths
 
     def find_category_changes(self):
-        """Return topics whose free-form category can be folded into a stable folder."""
+        """Return topics whose folder or filename should be normalized."""
         changes = []
-        for topic in self.list_topics():
-            canonical = normalize_category(topic["category"])
-            category_part = safe_path_part(canonical)
-            expected_prefix = os.path.join(OBSIDIAN_SUBDIR, category_part) + os.sep
-            path_needs_update = not topic["obsidian_path"].startswith(expected_prefix)
-            if canonical != topic["category"] or path_needs_update:
-                changes.append({
-                    "title": topic["title"],
-                    "from": topic["category"],
-                    "to": canonical,
-                })
+        topics = self.list_topics()
+        conn = self.connect()
+        try:
+            for topic in topics:
+                canonical = normalize_category(topic["category"])
+                expected_path = self._unique_obsidian_path(
+                    conn,
+                    topic["topic_id"],
+                    canonical,
+                    topic["title"],
+                    first_seen=topic["first_seen"],
+                    current_path=topic["obsidian_path"],
+                )
+                path_needs_update = expected_path != topic["obsidian_path"]
+                category_changed = canonical != topic["category"]
+                if category_changed or path_needs_update:
+                    changes.append({
+                        "title": topic["title"],
+                        "from": topic["category"],
+                        "to": canonical,
+                        "reason": "category" if category_changed else "title",
+                        "from_path": topic["obsidian_path"],
+                        "to_path": expected_path,
+                    })
+        finally:
+            if conn is not None:
+                conn.close()
         return changes
 
     def _canonicalize_categories(self, conn):
@@ -884,13 +932,18 @@ class KnowledgeStore:
             topic_id = int(row["topic_id"])
             old_category = row["category"]
             canonical = normalize_category(old_category)
-            category_part = safe_path_part(canonical)
-            expected_prefix = os.path.join(OBSIDIAN_SUBDIR, category_part) + os.sep
             old_path = row["obsidian_path"]
-            if old_category == canonical and old_path.startswith(expected_prefix):
+            new_path = self._unique_obsidian_path(
+                conn,
+                topic_id,
+                canonical,
+                row["title"],
+                first_seen=row["first_seen"],
+                current_path=old_path,
+            )
+            if old_category == canonical and old_path == new_path:
                 continue
 
-            new_path = self._unique_obsidian_path(conn, topic_id, canonical, row["title"])
             conn.execute(
                 """
                 UPDATE topics
@@ -907,6 +960,9 @@ class KnowledgeStore:
                 "title": row["title"],
                 "from": old_category,
                 "to": canonical,
+                "reason": "category" if old_category != canonical else "title",
+                "from_path": old_path,
+                "to_path": new_path,
             })
         return changes, removed_paths
 
