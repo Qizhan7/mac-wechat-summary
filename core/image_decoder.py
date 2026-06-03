@@ -67,7 +67,8 @@ def decode_wechat_image_data(data, image_aes_key=None):
         return None
 
     body = data[15:]
-    aligned_aes = aes_size + (16 - aes_size % 16) % 16
+    padding_size = 16 - (aes_size % 16)
+    aligned_aes = aes_size + padding_size
     if aligned_aes > len(body):
         return None
 

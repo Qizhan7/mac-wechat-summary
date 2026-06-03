@@ -66,8 +66,8 @@ class WeChatImageDecoderTests(unittest.TestCase):
         key = b"1234567890abcdef"
         image = b"\xff\xd8\xff\xe0" + b"fake-jpeg-body" * 10
         aes_size = len(image)
-        aligned = aes_size + (16 - aes_size % 16) % 16
-        padded = image + b"\x00" * (aligned - aes_size)
+        padding_size = 16 - (aes_size % 16)
+        padded = image + bytes([padding_size]) * padding_size
         encrypted = AES.new(key, AES.MODE_ECB).encrypt(padded)
         data = (
             b"\x07\x08\x56\x32\x08\x07"
