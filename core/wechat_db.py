@@ -2,12 +2,14 @@
 WeChat database queries - contacts, group chats, and message reading.
 Based on the query logic from the wechat-decrypt project's mcp_server.py.
 """
+import html
 import hashlib
 import json
 import os
 import re
 import sqlite3
 import tempfile
+import xml.etree.ElementTree as ET
 from datetime import datetime
 
 import zstandard as zstd
@@ -18,6 +20,34 @@ _zstd_dctx = zstd.ZstdDecompressor()
 
 # Regex to extract <title> from XML messages
 _RE_TITLE = re.compile(r"<title>(.*?)</title>", re.DOTALL)
+_RE_XML_FIELD = {}
+
+
+def _clean_xml_field(value):
+    text = str(value or "").strip()
+    if text.startswith("<![CDATA[") and text.endswith("]]>"):
+        text = text[9:-3]
+    return html.unescape(text).strip()
+
+
+def _xml_field(text, tag):
+    """Extract a simple XML field from WeChat's sometimes-imperfect appmsg XML."""
+    try:
+        root = ET.fromstring(text)
+        elem = root.find(f".//{tag}")
+        if elem is not None and elem.text:
+            return _clean_xml_field(elem.text)
+    except ET.ParseError:
+        pass
+
+    pattern = _RE_XML_FIELD.get(tag)
+    if pattern is None:
+        pattern = re.compile(rf"<{re.escape(tag)}>(.*?)</{re.escape(tag)}>", re.DOTALL)
+        _RE_XML_FIELD[tag] = pattern
+    match = pattern.search(text)
+    if not match:
+        return ""
+    return _clean_xml_field(match.group(1))
 
 
 def _clean_msg_text(text):
@@ -44,23 +74,24 @@ def _clean_msg_text(text):
 
     # ── appmsg: quoted replies, links, files, pat ──
     if "<appmsg" in stripped:
-        m = _RE_TITLE.search(stripped)
-        if m:
-            title = m.group(1).strip()
-            if not title:
-                return None
-            # Pat-pat: title contains "拍了拍"
-            if "拍了拍" in title:
-                return None
-            # Quoted reply (type=57): extract title as reply content
-            if "<type>57</type>" in stripped:
-                return f"[回复] {title}"
-            # File (type=6)
-            if "<type>6</type>" in stripped:
-                return f"[文件] {title}"
-            # Link/article (type=5 or other)
-            return f"[链接] {title}"
-        return None
+        title = _xml_field(stripped, "title")
+        if not title:
+            m = _RE_TITLE.search(stripped)
+            title = _clean_xml_field(m.group(1)) if m else ""
+        if not title:
+            return None
+        # Pat-pat: title contains "拍了拍"
+        if "拍了拍" in title:
+            return None
+        # Quoted reply (type=57): extract title as reply content
+        if "<type>57</type>" in stripped:
+            return f"[回复] {title}"
+        # File (type=6)
+        if "<type>6</type>" in stripped:
+            return f"[文件] {title}"
+        # Link/article (type=5 or other)
+        url = _xml_field(stripped, "url")
+        return f"[链接] {title} {url}".strip()
 
     # ── Image ──
     if "<img " in stripped or "<img>" in stripped:

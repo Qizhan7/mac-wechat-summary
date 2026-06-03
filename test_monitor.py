@@ -4,6 +4,7 @@ import unittest
 
 from core.monitor import TopicMonitor, load_state, save_state
 from core.knowledge import KnowledgeStore
+from core.wechat_db import _clean_msg_text
 
 
 class FakeDB:
@@ -258,6 +259,26 @@ class TopicMonitorTests(unittest.TestCase):
         self.assertFalse(os.path.exists(self.config["monitor_obsidian_root"]))
         self.assertEqual(load_state(self.state_file)["last_checked_ts"], 10)
 
+    def test_raw_message_links_are_saved_when_model_omits_links(self):
+        self.config["monitor_knowledge_enabled"] = True
+        self.config["monitor_knowledge_db"] = os.path.join(self.tmp.name, "knowledge.db")
+        self.config["monitor_obsidian_root"] = os.path.join(self.tmp.name, "obsidian")
+        save_state({"last_checked_ts": 10}, self.state_file)
+        db = FakeDB([msg(11, "Claude Code 新功能来了 https://example.com/codex?from=group。")])
+
+        result = self.monitor(
+            db,
+            lambda *_: self._knowledge_decision(
+                summary="1. 【00:11】成员提到 Claude Code 新功能，值得看。",
+                links=[],
+            ),
+        ).check_once()
+
+        self.assertEqual(result["status"], "notified")
+        with open(result["knowledge_path"], encoding="utf-8") as f:
+            markdown = f.read()
+        self.assertIn("https://example.com/codex?from=group", markdown)
+
     def _knowledge_decision(self, **overrides):
         data = {
             "match": True,
@@ -277,6 +298,35 @@ class TopicMonitorTests(unittest.TestCase):
             overrides["digest"] = summary
         data.update(overrides)
         return data
+
+
+class WeChatMessageCleanTests(unittest.TestCase):
+    def test_appmsg_link_keeps_url(self):
+        raw = (
+            "<msg><appmsg><type>5</type>"
+            "<title><![CDATA[Claude Code 新功能说明]]></title>"
+            "<url><![CDATA[https://example.com/codex?x=1&y=2]]></url>"
+            "</appmsg></msg>"
+        )
+
+        cleaned = _clean_msg_text(raw)
+
+        self.assertEqual(
+            cleaned,
+            "[链接] Claude Code 新功能说明 https://example.com/codex?x=1&y=2",
+        )
+
+    def test_appmsg_link_keeps_escaped_url(self):
+        raw = (
+            "<msg><appmsg><type>5</type>"
+            "<title>Claude Code 新功能说明</title>"
+            "<url>https://example.com/codex?x=1&amp;y=2</url>"
+            "</appmsg></msg>"
+        )
+
+        cleaned = _clean_msg_text(raw)
+
+        self.assertIn("https://example.com/codex?x=1&y=2", cleaned)
 
 
 if __name__ == "__main__":
