@@ -624,8 +624,10 @@ class WeChatSummaryApp(rumps.App):
 
     def _maintenance_scan(self):
         if not self._monitor_lock.acquire(blocking=False):
-            _notify("关注推送", "正在忙", "监控或上一次整理还没结束，稍后再试")
-            return
+            _notify("关注推送", "正在等待", "当前监控检查还没结束，整理会稍后继续")
+            if not self._monitor_lock.acquire(timeout=90):
+                _notify("关注推送", "仍在忙", "当前检查耗时较久，稍后再点一次整理")
+                return
         try:
             store = KnowledgeStore.from_config(self.config)
             plan = store.run_maintenance(dry_run=True)
@@ -634,12 +636,14 @@ class WeChatSummaryApp(rumps.App):
             self._monitor_lock.release()
             _notify("关注推送", "整理失败", str(e)[:180])
             return
+        self._monitor_lock.release()
         self._run_on_main(self._maintenance_confirm, plan)
 
     def _maintenance_confirm(self, plan):
         confirmed = False
         try:
             groups = plan.get("duplicate_groups", [])
+            category_changes = plan.get("category_changes", [])
             total = plan.get("total_topics", 0)
             removed = plan.get("removed_count", 0)
             lines = []
@@ -649,16 +653,35 @@ class WeChatSummaryApp(rumps.App):
             if len(groups) > 8:
                 lines.append(f"…… 另有 {len(groups) - 8} 组")
 
+            category_lines = []
+            for change in category_changes[:10]:
+                category_lines.append(
+                    f"· {change.get('from', '')} → {change.get('to', '')}：{change.get('title', '')}"
+                )
+            if len(category_changes) > 10:
+                category_lines.append(f"…… 另有 {len(category_changes) - 10} 篇")
+
             if groups:
                 head = (
                     f"发现 {plan['group_count']} 组疑似重复，"
                     f"{plan['merge_note_count']} 篇将合并成 {plan['group_count']} 篇。\n"
+                    f"另有 {len(category_changes)} 篇会归并到稳定分类文件夹。\n"
                     f"随后把全部 {total - removed} 篇重新导出到当前 Obsidian 仓库"
                     f"（回填双链 / event_count）。\n\n"
                     + "\n".join(lines)
-                    + "\n\n这会删除被合并的笔记，确定整理吗？"
+                    + ("\n\n分类归并：\n" + "\n".join(category_lines) if category_lines else "")
+                    + "\n\n这会删除被合并的笔记，并移动归并分类后的笔记，确定整理吗？"
                 )
                 ok_label = "开始整理"
+            elif category_changes:
+                head = (
+                    "没有发现重复主题。\n"
+                    f"发现 {len(category_changes)} 篇笔记可以归并到更少的分类文件夹，"
+                    f"随后把全部 {total} 篇重新导出到当前 Obsidian 仓库。\n\n"
+                    + "\n".join(category_lines)
+                    + "\n\n这会移动这些笔记到归并后的文件夹，确定整理吗？"
+                )
+                ok_label = "归并并重导出"
             else:
                 head = (
                     "没有发现重复主题。\n"
@@ -677,18 +700,24 @@ class WeChatSummaryApp(rumps.App):
             confirmed = False
 
         if not confirmed:
-            self._monitor_lock.release()
             _notify("关注推送", "已取消整理", "没有任何改动")
             return
         threading.Thread(target=self._maintenance_execute, daemon=True).start()
 
     def _maintenance_execute(self):
+        if not self._monitor_lock.acquire(blocking=False):
+            _notify("关注推送", "正在等待", "当前监控检查还没结束，整理会稍后继续")
+            if not self._monitor_lock.acquire(timeout=90):
+                _notify("关注推送", "仍在忙", "当前检查耗时较久，稍后再点一次整理")
+                return
         try:
             store = KnowledgeStore.from_config(self.config)
             result = store.run_maintenance(dry_run=False)
             _notify(
                 "关注推送", "整理完成",
-                f"合并 {result['removed_count']} 篇重复，重新导出 {result['reexport_count']} 篇",
+                f"合并 {result['removed_count']} 篇重复，"
+                f"归并 {result.get('category_change_count', 0)} 篇分类，"
+                f"重新导出 {result['reexport_count']} 篇",
             )
         except Exception as e:
             traceback.print_exc()

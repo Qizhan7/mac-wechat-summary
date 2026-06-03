@@ -22,6 +22,16 @@ RELATION_LABELS = {
     "contradiction": "反转/辟谣",
 }
 
+CATEGORY_ALIASES = (
+    ("群内八卦", ("八卦", "搞笑", "吃瓜", "瓜", "轶事")),
+    ("自建app", ("自建app", "自建 app", "app新功能", "app 新功能")),
+    ("设计讨论", ("设计", "自主权", "自主性", "agent")),
+    ("技术方法", ("教程", "技巧", "方法", "配置", "资源", "实践")),
+    ("工具更新", ("工具", "产品", "应用", "新功能", "更新")),
+    ("AI实验", ("实验", "报告", "测评", "修复")),
+    ("AI模型", ("模型", "安全", "发布传闻")),
+)
+
 
 def _json_dumps(value):
     return json.dumps(value or [], ensure_ascii=False)
@@ -850,6 +860,71 @@ class KnowledgeStore:
         self._upsert_fts(conn, primary_id)
         return primary_id, removed_paths
 
+    def find_category_changes(self):
+        """Return topics whose free-form category can be folded into a stable folder."""
+        changes = []
+        for topic in self.list_topics():
+            canonical = normalize_category(topic["category"])
+            category_part = safe_path_part(canonical)
+            expected_prefix = os.path.join(OBSIDIAN_SUBDIR, category_part) + os.sep
+            path_needs_update = not topic["obsidian_path"].startswith(expected_prefix)
+            if canonical != topic["category"] or path_needs_update:
+                changes.append({
+                    "title": topic["title"],
+                    "from": topic["category"],
+                    "to": canonical,
+                })
+        return changes
+
+    def _canonicalize_categories(self, conn):
+        changes = []
+        removed_paths = []
+        rows = conn.execute("SELECT * FROM topics ORDER BY topic_id").fetchall()
+        for row in rows:
+            topic_id = int(row["topic_id"])
+            old_category = row["category"]
+            canonical = normalize_category(old_category)
+            category_part = safe_path_part(canonical)
+            expected_prefix = os.path.join(OBSIDIAN_SUBDIR, category_part) + os.sep
+            old_path = row["obsidian_path"]
+            if old_category == canonical and old_path.startswith(expected_prefix):
+                continue
+
+            new_path = self._unique_obsidian_path(conn, topic_id, canonical, row["title"])
+            conn.execute(
+                """
+                UPDATE topics
+                SET category = ?, obsidian_path = ?, updated_at = ?
+                WHERE topic_id = ?
+                """,
+                (canonical, new_path, self.now_func(), topic_id),
+            )
+            conn.execute("UPDATE events SET category = ? WHERE topic_id = ?", (canonical, topic_id))
+            self._upsert_fts(conn, topic_id)
+            if old_path != new_path:
+                removed_paths.append(self.full_obsidian_path(old_path))
+            changes.append({
+                "title": row["title"],
+                "from": old_category,
+                "to": canonical,
+            })
+        return changes, removed_paths
+
+    def _remove_empty_obsidian_dirs(self):
+        root = os.path.join(self.obsidian_root, OBSIDIAN_SUBDIR)
+        if not os.path.isdir(root):
+            return 0
+        removed = 0
+        for current, _, _ in os.walk(root, topdown=False):
+            if current == root:
+                continue
+            try:
+                os.rmdir(current)
+                removed += 1
+            except OSError:
+                pass
+        return removed
+
     def reexport_all(self):
         """Rewrite every topic's Markdown to the current obsidian_root."""
         conn = self.connect()
@@ -866,11 +941,12 @@ class KnowledgeStore:
         return count
 
     def run_maintenance(self, dry_run=False, threshold=85):
-        """Merge near-duplicate topics, then re-export all notes to the vault."""
+        """Merge duplicate topics, fold category folders, then re-export all notes."""
         if self.read_only:
             raise RuntimeError("knowledge store is read-only")
 
         groups = self.find_duplicate_groups(threshold=threshold)
+        category_changes = self.find_category_changes()
         summary = []
         for g in groups:
             primary = self._pick_primary(g)
@@ -885,6 +961,8 @@ class KnowledgeStore:
             "merge_note_count": merge_note_count,
             "removed_count": merge_note_count - len(groups),
             "total_topics": len(self.list_topics()),
+            "category_changes": category_changes,
+            "category_change_count": len(category_changes),
         }
         if dry_run:
             result["reexport_count"] = result["total_topics"] - result["removed_count"]
@@ -892,10 +970,13 @@ class KnowledgeStore:
 
         conn = self.connect()
         removed_paths = []
+        applied_category_changes = []
         try:
             for g in groups:
                 _, paths = self._merge_group(conn, g)
                 removed_paths.extend(paths)
+            applied_category_changes, category_paths = self._canonicalize_categories(conn)
+            removed_paths.extend(category_paths)
             conn.commit()
         except Exception:
             conn.rollback()
@@ -910,7 +991,10 @@ class KnowledgeStore:
             except OSError:
                 pass
 
+        result["category_changes"] = applied_category_changes
+        result["category_change_count"] = len(applied_category_changes)
         result["reexport_count"] = self.reexport_all()
+        result["removed_empty_dirs"] = self._remove_empty_obsidian_dirs()
         return result
 
     @staticmethod
@@ -962,7 +1046,13 @@ def normalize_relation(value):
 
 def normalize_category(value):
     text = str(value or "").strip()
-    return text[:40] if text else "未分类"
+    if not text:
+        return "未分类"
+    compact = re.sub(r"[\s,，/、]+", "", text).lower()
+    for canonical, needles in CATEGORY_ALIASES:
+        if any(needle.lower().replace(" ", "") in compact for needle in needles):
+            return canonical
+    return text[:40]
 
 
 def normalize_status(value):

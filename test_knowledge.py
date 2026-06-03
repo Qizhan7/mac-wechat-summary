@@ -230,6 +230,70 @@ class KnowledgeStoreTests(unittest.TestCase):
         self.assertEqual(result["removed_count"], 1)
         self.assertEqual(len(self.rows("topics")), 2)
 
+    def test_run_maintenance_merges_category_folders(self):
+        technique = self.store.apply_event(
+            candidate(
+                title="Claude 4.8 思考链提取技巧",
+                topic_key="claude-48-thinking-tips",
+                category="AI产品技巧",
+                summary="1. 【03:16】群里分享 Claude 4.8 思考链提取技巧。",
+                links=[],
+            ),
+            self.messages,
+            self.config,
+            {"relation": "new"},
+        )
+        tool = self.store.apply_event(
+            candidate(
+                title="自建 app 新功能讨论",
+                topic_key="self-app-feature",
+                category="自建app新功能",
+                summary="1. 【03:20】群里讨论自建 app 的新功能。",
+                links=[],
+            ),
+            self.messages,
+            self.config,
+            {"relation": "new"},
+        )
+
+        def move_to_legacy_folder(result, legacy_category):
+            current_path = result["knowledge_path"]
+            legacy_rel = os.path.join(
+                "关注推送", legacy_category, os.path.basename(current_path),
+            )
+            legacy_path = os.path.join(self.obsidian_root, legacy_rel)
+            os.makedirs(os.path.dirname(legacy_path), exist_ok=True)
+            os.rename(current_path, legacy_path)
+            conn = sqlite3.connect(self.db_path)
+            try:
+                conn.execute(
+                    "UPDATE topics SET category = ?, obsidian_path = ? WHERE topic_id = ?",
+                    (legacy_category, legacy_rel, result["topic_id"]),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            return legacy_path
+
+        old_technique_path = move_to_legacy_folder(technique, "AI产品技巧")
+        old_tool_path = move_to_legacy_folder(tool, "自建app新功能")
+        plan = self.store.run_maintenance(dry_run=True)
+        self.assertEqual(plan["category_change_count"], 2)
+        self.assertTrue(os.path.exists(old_technique_path))
+        self.assertTrue(os.path.exists(old_tool_path))
+
+        result = self.store.run_maintenance()
+
+        self.assertEqual(result["category_change_count"], 2)
+        self.assertFalse(os.path.exists(old_technique_path))
+        self.assertFalse(os.path.exists(old_tool_path))
+        topics = {t["topic_key"]: t for t in self.store.list_topics()}
+        self.assertEqual(topics["claude-48-thinking-tips"]["category"], "技术方法")
+        self.assertEqual(topics["self-app-feature"]["category"], "自建app")
+        self.assertIn(os.path.join("关注推送", "技术方法"), topics["claude-48-thinking-tips"]["obsidian_path"])
+        self.assertIn(os.path.join("关注推送", "自建app"), topics["self-app-feature"]["obsidian_path"])
+        self.assertEqual(result["removed_empty_dirs"], 2)
+
     def test_maintenance_does_not_merge_broadly_related_ai_topics(self):
         self.store.apply_event(
             candidate(
