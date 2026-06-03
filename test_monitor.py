@@ -392,6 +392,45 @@ class WeChatMessageCleanTests(unittest.TestCase):
 
         self.assertIn("https://example.com/codex?x=1&y=2", cleaned)
 
+    def test_forwarded_chat_record_extracts_embedded_items(self):
+        raw = """<msg><appmsg>
+<title>群聊的聊天记录</title>
+<des>盏:[文件] bdsmtest_long.zip</des>
+<type>19</type>
+<url>https://support.weixin.qq.com/cgi-bin/mmsupport-bin/readtemplate?t=page/favorite_record__w_unsupport</url>
+<recorditem><![CDATA[<recordinfo>
+<title>群聊的聊天记录</title>
+<datalist count="3">
+<dataitem datatype="8"><sourcename>盏</sourcename><sourcetime>2026-6-3 凌晨5:36</sourcetime><datatitle>bdsmtest_long.zip</datatitle><datafmt>zip</datafmt></dataitem>
+<dataitem datatype="1"><sourcename>盏</sourcename><sourcetime>2026-6-3 凌晨5:37</sourcetime><datadesc>机做的</datadesc></dataitem>
+<dataitem datatype="1"><sourcename>盏</sourcename><sourcetime>2026-6-3 凌晨5:37</sourcetime><datadesc>https://bdsmtest.org/questions</datadesc></dataitem>
+</datalist>
+</recordinfo>]]></recorditem>
+</appmsg></msg>"""
+
+        cleaned = _clean_msg_text(raw)
+
+        self.assertIn("[聊天记录] 群聊的聊天记录", cleaned)
+        self.assertIn("[文件] bdsmtest_long.zip", cleaned)
+        self.assertIn("机做的", cleaned)
+        self.assertIn("https://bdsmtest.org/questions", cleaned)
+        self.assertNotIn("favorite_record__w_unsupport", cleaned)
+
+    def test_quoted_forwarded_chat_record_extracts_refermsg_record(self):
+        raw = """<msg><appmsg>
+<title>这里是测试</title>
+<type>57</type>
+<refermsg><content>&lt;msg&gt;&lt;appmsg&gt;&lt;title&gt;盏的聊天记录&lt;/title&gt;&lt;type&gt;19&lt;/type&gt;&lt;recorditem&gt;&lt;![CDATA[&lt;recordinfo&gt;&lt;desc&gt;盏: [文件] test.zip
+盏: https://example.com/questions&lt;/desc&gt;&lt;datalist count="0"/&gt;&lt;/recordinfo&gt;]]&gt;&lt;/recorditem&gt;&lt;/appmsg&gt;&lt;/msg&gt;</content></refermsg>
+</appmsg></msg>"""
+
+        cleaned = _clean_msg_text(raw)
+
+        self.assertIn("[回复] 这里是测试", cleaned)
+        self.assertIn("[聊天记录] 聊天记录", cleaned)
+        self.assertIn("盏: [文件] test.zip", cleaned)
+        self.assertIn("https://example.com/questions", cleaned)
+
 
 if __name__ == "__main__":
     unittest.main()

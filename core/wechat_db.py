@@ -21,6 +21,7 @@ _zstd_dctx = zstd.ZstdDecompressor()
 # Regex to extract <title> from XML messages
 _RE_TITLE = re.compile(r"<title>(.*?)</title>", re.DOTALL)
 _RE_XML_FIELD = {}
+_RE_RECORDITEM = re.compile(r"<recorditem>(.*?)</recorditem>", re.DOTALL)
 
 
 def _clean_xml_field(value):
@@ -48,6 +49,109 @@ def _xml_field(text, tag):
     if not match:
         return ""
     return _clean_xml_field(match.group(1))
+
+
+def _recordinfo_candidates(text):
+    """Extract embedded WeChat forwarded chat-record XML snippets."""
+    candidates = []
+    seen = set()
+
+    def add(value):
+        value = _clean_xml_field(value)
+        if "<recordinfo" not in value:
+            return
+        key = value[:200]
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(value)
+
+    try:
+        root = ET.fromstring(text)
+        for elem in root.findall(".//recorditem"):
+            if elem.text:
+                add(elem.text)
+    except ET.ParseError:
+        pass
+
+    for source in (text, html.unescape(text)):
+        for match in _RE_RECORDITEM.findall(source):
+            add(match)
+
+    return candidates
+
+
+def _elem_text(elem, tag):
+    child = elem.find(tag)
+    if child is None or child.text is None:
+        return ""
+    return _clean_xml_field(child.text)
+
+
+def _parse_recordinfo(record_xml, max_items=8):
+    """Parse WeChat recordinfo XML into a compact readable excerpt."""
+    try:
+        root = ET.fromstring(record_xml)
+    except ET.ParseError:
+        return None
+
+    title = _elem_text(root, "title") or "聊天记录"
+    desc = _elem_text(root, "desc") or _elem_text(root, "info")
+    items = []
+
+    for item in root.findall(".//dataitem"):
+        source = _elem_text(item, "sourcename")
+        source_time = _elem_text(item, "sourcetime")
+        data_title = _elem_text(item, "datatitle")
+        data_desc = _elem_text(item, "datadesc")
+        data_fmt = _elem_text(item, "datafmt")
+        datatype = item.attrib.get("datatype", "")
+
+        if datatype == "8" or data_fmt:
+            content = f"[文件] {data_title or data_desc or data_fmt}".strip()
+        else:
+            content = data_desc or data_title
+        content = _clean_xml_field(content)
+        if not content:
+            continue
+
+        prefix_parts = [x for x in (source_time, source) if x]
+        prefix = " ".join(prefix_parts)
+        items.append(f"{prefix}: {content}" if prefix else content)
+        if len(items) >= max_items:
+            break
+
+    if not items and desc:
+        items = [
+            line.strip()
+            for line in desc.splitlines()
+            if line.strip()
+        ][:max_items]
+
+    if not items:
+        return None
+
+    total_count = 0
+    datalist = root.find(".//datalist")
+    if datalist is not None:
+        try:
+            total_count = int(datalist.attrib.get("count") or 0)
+        except ValueError:
+            total_count = 0
+
+    if total_count > len(items):
+        items.append(f"... 另有 {total_count - len(items)} 条")
+
+    body = "\n".join(f"- {line}" for line in items)
+    return f"[聊天记录] {title}\n{body}"
+
+
+def _extract_record_summary(text):
+    for record_xml in _recordinfo_candidates(text):
+        summary = _parse_recordinfo(record_xml)
+        if summary:
+            return summary
+    return ""
 
 
 def _clean_msg_text(text):
@@ -79,16 +183,27 @@ def _clean_msg_text(text):
             m = _RE_TITLE.search(stripped)
             title = _clean_xml_field(m.group(1)) if m else ""
         if not title:
+            record_summary = _extract_record_summary(stripped)
+            if record_summary:
+                return record_summary
             return None
         # Pat-pat: title contains "拍了拍"
         if "拍了拍" in title:
             return None
         # Quoted reply (type=57): extract title as reply content
         if "<type>57</type>" in stripped:
+            record_summary = _extract_record_summary(stripped)
+            if record_summary:
+                return f"[回复] {title}\n{record_summary}"
             return f"[回复] {title}"
         # File (type=6)
         if "<type>6</type>" in stripped:
             return f"[文件] {title}"
+        # Forwarded chat record (type=19)
+        if "<type>19</type>" in stripped:
+            record_summary = _extract_record_summary(stripped)
+            if record_summary:
+                return record_summary
         # Link/article (type=5 or other)
         url = _xml_field(stripped, "url")
         return f"[链接] {title} {url}".strip()
