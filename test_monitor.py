@@ -4,6 +4,7 @@ import unittest
 
 from core.monitor import TopicMonitor, load_state, save_state
 from core.knowledge import KnowledgeStore
+from core.link_preview import fetch_link_preview
 from core.api_errors import is_retryable_ai_error, normalize_ai_error
 from core.wechat_db import _clean_msg_text
 
@@ -305,6 +306,42 @@ class TopicMonitorTests(unittest.TestCase):
         self.assertIn("AI/agent/模型互动实验", prompt)
         self.assertIn("模型行为边界或偏好反馈", prompt)
         self.assertIn("不要按单个敏感词字面过滤或命中", prompt)
+
+    def test_link_preview_context_is_included_in_monitor_prompt(self):
+        save_state({"last_checked_ts": 10}, self.state_file)
+        db = FakeDB([msg(11, "Claude Code 新功能介绍 https://example.com/codex")])
+        seen_prompt = []
+
+        monitor = TopicMonitor(
+            db,
+            self.config,
+            state_file=self.state_file,
+            hits_dir=self.hits_dir,
+            ai_evaluator=lambda prompt, *_: seen_prompt.append(prompt) or {"match": False},
+            link_preview_fetcher=lambda url: {
+                "url": url,
+                "status": "ok",
+                "title": "Claude Code 新功能说明",
+                "summary": "介绍了一个可以启发实际项目的功能更新。",
+            },
+            now_func=lambda: 1000,
+        )
+
+        result = monitor.check_once()
+
+        self.assertEqual(result["status"], "no_match")
+        self.assertIn("<link_context>", seen_prompt[0])
+        self.assertIn("Claude Code 新功能说明", seen_prompt[0])
+        self.assertIn("介绍了一个可以启发实际项目的功能更新", seen_prompt[0])
+
+    def test_wechat_record_link_is_marked_unavailable_without_network_guessing(self):
+        preview = fetch_link_preview(
+            "https://support.weixin.qq.com/cgi-bin/mmsupport-bin/readtemplate"
+            "?t=page/favorite_record__w_unsupport&from=singlemessage"
+        )
+
+        self.assertEqual(preview["status"], "unavailable")
+        self.assertIn("无法读取被转发的聊天记录正文", preview["summary"])
 
     def _knowledge_decision(self, **overrides):
         data = {

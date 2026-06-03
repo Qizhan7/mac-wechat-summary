@@ -17,6 +17,11 @@ from .knowledge import (
     normalize_candidate,
     normalize_relation,
 )
+from .link_preview import (
+    extract_links,
+    fetch_link_preview,
+    format_link_previews,
+)
 from .keychain import load_key
 from .api_errors import is_retryable_ai_error, normalize_ai_error
 
@@ -76,6 +81,7 @@ class TopicMonitor:
         ai_evaluator=None,
         relation_evaluator=None,
         knowledge_store=None,
+        link_preview_fetcher=None,
         now_func=time.time,
     ):
         self.db = db
@@ -85,6 +91,7 @@ class TopicMonitor:
         self.ai_evaluator = ai_evaluator
         self.relation_evaluator = relation_evaluator
         self.knowledge_store = knowledge_store
+        self.link_preview_fetcher = link_preview_fetcher or fetch_link_preview
         self.now_func = now_func
 
     def check_once(self, dry_run=False):
@@ -118,7 +125,8 @@ class TopicMonitor:
             messages,
             show_group_nickname=self.config.get("show_group_nickname", True),
         )
-        decision = self._evaluate(messages, messages_text, topic)
+        link_context = self._build_link_context(messages)
+        decision = self._evaluate(messages, messages_text, topic, link_context)
         normalized = self._normalize_decision(decision, messages)
 
         last_msg_ts = messages[-1]["timestamp"]
@@ -325,13 +333,51 @@ class TopicMonitor:
             return f"反转/辟谣: {decision['title']}"
         return decision["title"]
 
-    def _evaluate(self, messages, messages_text, topic):
-        prompt = self._build_prompt(messages, messages_text, topic)
+    def _build_link_context(self, messages):
+        if not self.config.get("monitor_fetch_links", True):
+            return ""
+
+        try:
+            max_links = int(self.config.get("monitor_max_links_per_run", 5))
+        except (TypeError, ValueError):
+            max_links = 5
+        if max_links <= 0:
+            return ""
+
+        links = []
+        seen = set()
+        for msg in messages:
+            for url in extract_links(msg.get("text", "")):
+                key = url.lower()
+                if key in seen:
+                    continue
+                links.append(url)
+                seen.add(key)
+                if len(links) >= max_links:
+                    break
+            if len(links) >= max_links:
+                break
+
+        previews = []
+        for url in links:
+            try:
+                previews.append(self.link_preview_fetcher(url))
+            except Exception as e:
+                previews.append({
+                    "url": url,
+                    "status": "error",
+                    "title": "",
+                    "summary": f"链接读取失败：{type(e).__name__}",
+                })
+        return format_link_previews(previews)
+
+    def _evaluate(self, messages, messages_text, topic, link_context=""):
+        prompt = self._build_prompt(messages, messages_text, topic, link_context)
         if self.ai_evaluator:
             return self.ai_evaluator(prompt, self.config)
         return self._call_deepseek(prompt)
 
-    def _build_prompt(self, messages, messages_text, topic):
+    def _build_prompt(self, messages, messages_text, topic, link_context=""):
         group_name = self.config.get("monitor_chat_display_name", "监控群聊")
         start_time = messages[0].get("time_str", "")
         end_time = messages[-1].get("time_str", "")
@@ -349,6 +395,10 @@ class TopicMonitor:
 消息数：{len(messages)}
 </chat_context>
 
+<link_context>
+{link_context or "无"}
+</link_context>
+
 <decision_policy>
 1. 先理解用户关注描述背后的真实意图，包括用户想知道的对象、事件、变化、机会、风险、情绪或提醒。
 2. 从新增消息中聚合 0-3 个候选话题；不要逐条消息机械判断，也不要只按关键词判断。
@@ -365,6 +415,7 @@ class TopicMonitor:
 9. 如果用户关注描述包含新功能、产品更新、AI 工具、链接、教程、实验报告、具体做法、自建 app 或 agent 设计，那么“明确对象 + 明确变化/功能/做法/链接/结论”的单条消息也可以通知；不要因为只有单条就降到 70 分以下。
 10. 如果同一时间窗里有多个候选都达到通知门槛，不要只保留最热门、最严肃或最后出现的一条；digest 可以同时列出多个话题，title 和 topic_key 用能覆盖这些话题的稳定短语。
 11. 如果消息讨论的是 AI/agent/模型互动实验、可玩玩法、角色/场景测试、模型行为边界或偏好反馈，即使语气轻松、带玩笑或关系向表达，也要先按大类判断是否有方法、结果或启发；不要按单个敏感词字面过滤或命中。
+12. link_context 是程序尝试展开链接后的辅助材料：如果有标题/摘要，可以结合原消息判断链接内容；如果状态是 unavailable、error 或 unsupported，必须承认链接正文不可见，不要臆造链接内容，只根据聊天上下文判断是否提醒。
 </decision_policy>
 
 <negative_rules>

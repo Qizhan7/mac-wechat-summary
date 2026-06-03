@@ -27,6 +27,8 @@ DEFAULT_CONFIG = {
     "monitor_topic": "",
     "monitor_max_messages_per_run": 200,
     "monitor_cooldown_minutes": 15,
+    "monitor_fetch_links": True,
+    "monitor_max_links_per_run": 5,
     "monitor_ai_provider": "deepseek",
     "monitor_ai_model": "deepseek-v4-flash",
     "monitor_knowledge_enabled": True,
@@ -60,7 +62,7 @@ def _sanitize_config(saved):
 
     for key in (
         "auto_refresh_on_open", "show_group_nickname", "monitor_enabled",
-        "monitor_knowledge_enabled",
+        "monitor_knowledge_enabled", "monitor_fetch_links",
     ):
         value = saved.get(key)
         if isinstance(value, bool):
@@ -72,6 +74,7 @@ def _sanitize_config(saved):
         "monitor_interval_minutes": (1, 1440),
         "monitor_max_messages_per_run": (1, 1000),
         "monitor_cooldown_minutes": (0, 1440),
+        "monitor_max_links_per_run": (0, 20),
     }
     for key, (min_value, max_value) in int_ranges.items():
         value = saved.get(key)
