@@ -100,6 +100,9 @@ ICON_LOADING = "⏳ "
 ICON_DONE = "✅ "
 ICON_ERROR = "❌ "
 
+BATCH_CONFIRM_CHAT_COUNT = 5
+CUSTOM_SUMMARY_MAX_COUNT = 1000
+
 # PNG icon state mapping
 _ICON_PNG_MAP = {
     ICON_NORMAL: ICON_PNG,
@@ -107,6 +110,10 @@ _ICON_PNG_MAP = {
     ICON_DONE: ICON_DONE_PNG,
     ICON_ERROR: ICON_ERROR_PNG,
 }
+
+
+class UserCancelled(RuntimeError):
+    """Raised when the user asks the current background task to stop."""
 
 
 def _notification_text(value, limit=700):
@@ -182,6 +189,8 @@ class WeChatSummaryApp(rumps.App):
         self.db = None
         self.ai = None
         self._summarizing = False
+        self._cancel_requested = False
+        self._active_task = ""
         self._last_summary = None
         self._current_status = ICON_NORMAL
         self._monitor_timer = None
@@ -192,6 +201,7 @@ class WeChatSummaryApp(rumps.App):
         self.menu = [
             rumps.MenuItem("刷新群聊列表", callback=self.refresh_groups),
             rumps.MenuItem("🔍 关键词搜索", callback=self._on_search_click),
+            rumps.MenuItem("⛔ 停止当前任务", callback=self._cancel_current_task),
             rumps.separator,
             # Dynamic area: ungrouped chats (📎) inserted via insert_after
             rumps.separator,
@@ -936,6 +946,29 @@ class WeChatSummaryApp(rumps.App):
             except Exception:
                 pass
 
+    def _begin_task(self, label):
+        self._summarizing = True
+        self._cancel_requested = False
+        self._active_task = label
+        self._set_status(ICON_LOADING)
+
+    def _finish_task(self):
+        self._summarizing = False
+        self._cancel_requested = False
+        self._active_task = ""
+
+    def _check_cancelled(self):
+        if self._cancel_requested:
+            raise UserCancelled("用户已取消当前任务")
+
+    def _cancel_current_task(self, _):
+        if not self._summarizing:
+            _notify("微信总结", "当前没有任务", "没有正在运行的总结或搜索")
+            return
+        self._cancel_requested = True
+        label = self._active_task or "当前任务"
+        _notify("微信总结", "已请求停止", f"{label} 会在当前 API 请求结束后停止")
+
     def _input_dialog(self, title, message, default_text="",
                       ok="确定", cancel="取消", width=300):
         """Show input dialog with correct app icon (replaces rumps.Window).
@@ -1302,6 +1335,9 @@ class WeChatSummaryApp(rumps.App):
                         ).start()
                     else:
                         count = int(text)
+                        if count <= 0 or count > CUSTOM_SUMMARY_MAX_COUNT:
+                            _notify("微信总结", "输入错误", f"消息条数请输入 1-{CUSTOM_SUMMARY_MAX_COUNT} 的整数")
+                            return
                         threading.Thread(
                             target=self._summarize_group,
                             args=(session,),
@@ -1368,10 +1404,10 @@ class WeChatSummaryApp(rumps.App):
             if count_str:
                 try:
                     count = int(count_str)
-                    if count <= 0:
+                    if count <= 0 or count > CUSTOM_SUMMARY_MAX_COUNT:
                         raise ValueError
                 except ValueError:
-                    _notify("微信总结", "输入错误", "消息条数请输入正整数")
+                    _notify("微信总结", "输入错误", f"消息条数请输入 1-{CUSTOM_SUMMARY_MAX_COUNT} 的整数")
                     return
                 threading.Thread(
                     target=self._summarize_group,
@@ -1519,8 +1555,7 @@ class WeChatSummaryApp(rumps.App):
 
         CHUNK_SIZE = 300
 
-        self._summarizing = True
-        self._set_status(ICON_LOADING)
+        self._begin_task(f"按天总结：{session['name']}")
 
         try:
             username = session["username"]
@@ -1561,6 +1596,7 @@ class WeChatSummaryApp(rumps.App):
 
             summaries = []
             for idx, chunk in enumerate(chunks, 1):
+                self._check_cancelled()
                 chunk_start = chunk[0]["time_str"]
                 chunk_end = chunk[-1]["time_str"]
                 chunk_text = self.db.format_messages_for_ai(
@@ -1583,6 +1619,9 @@ class WeChatSummaryApp(rumps.App):
                 )
                 try:
                     summary = self.ai.summarize(prompt)
+                    self._check_cancelled()
+                except UserCancelled:
+                    raise
                 except Exception as e:
                     print(f"[daily]   ✗ 第 {idx} 段失败: {e}")
                     summary = f"（此段总结失败：{e}）"
@@ -1616,12 +1655,15 @@ class WeChatSummaryApp(rumps.App):
             subprocess.run(["open", summary_file])
             self._set_status(ICON_DONE)
 
+        except UserCancelled:
+            _notify("微信总结", "已停止", f"{group_name} 的按天总结已停止")
+            self._set_status(ICON_NORMAL)
         except Exception as e:
             _notify("微信总结", "按天总结失败", str(e))
             traceback.print_exc()
             self._set_status(ICON_ERROR)
         finally:
-            self._summarizing = False
+            self._finish_task()
 
     def _combine_daily_summaries(self, summaries, total_chunks):
         if total_chunks == 1:
@@ -1658,8 +1700,7 @@ class WeChatSummaryApp(rumps.App):
     # ── Summary logic ────────────────────────────────────────
 
     def _summarize_group(self, session, custom_count=None, custom_minutes=None):
-        self._summarizing = True
-        self._set_status(ICON_LOADING)
+        self._begin_task(f"总结：{session['name']}")
 
         try:
             username = session["username"]
@@ -1690,6 +1731,7 @@ class WeChatSummaryApp(rumps.App):
             msg_count = len(messages)
 
             print(f"[summary] {group_name}: 共 {msg_count} 条消息 ({start_time} ~ {end_time}), 正在调用 AI...")
+            self._check_cancelled()
 
             if not self.ai:
                 try:
@@ -1709,6 +1751,7 @@ class WeChatSummaryApp(rumps.App):
             )
 
             summary = self.ai.summarize(prompt)
+            self._check_cancelled()
 
             # Update bookmark
             set_bookmark(username, messages[-1]["timestamp"])
@@ -1734,12 +1777,15 @@ class WeChatSummaryApp(rumps.App):
 
             self._set_status(ICON_DONE)
 
+        except UserCancelled:
+            _notify("微信总结", "已停止", f"{group_name} 的总结已停止")
+            self._set_status(ICON_NORMAL)
         except Exception as e:
             _notify("微信总结", "总结失败", str(e))
             traceback.print_exc()
             self._set_status(ICON_ERROR)
         finally:
-            self._summarizing = False
+            self._finish_task()
 
     def _save_summary(self, group_name, summary, msg_count, start_time, end_time):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2028,15 +2074,41 @@ class WeChatSummaryApp(rumps.App):
                 _notify("微信总结", "请等待", "正在总结中...")
                 return
             self._set_status(ICON_NORMAL)
+            chat_count = len(get_group_chats(group_name))
+            if chat_count > BATCH_CONFIRM_CHAT_COUNT:
+                self._delayed_run(self._confirm_batch_summary, group_name, chat_count)
+                return
             threading.Thread(
                 target=self._batch_summarize, args=(group_name,), daemon=True
             ).start()
         return callback
 
+    def _confirm_batch_summary(self, group_name, chat_count):
+        self._bring_to_front()
+        try:
+            batch_limit = self.config.get("batch_msg_limit", 100)
+            confirmed = self._confirm_dialog(
+                "确认批量总结",
+                f"分组「{group_name}」包含 {chat_count} 个群。\n"
+                f"当前设置为每群最多 {batch_limit} 条，"
+                f"本次最多会读取约 {chat_count * batch_limit} 条消息。\n\n"
+                "确定开始吗？",
+                ok="开始总结",
+            )
+            if not confirmed:
+                return
+            if self._summarizing:
+                _notify("微信总结", "请等待", "正在总结中...")
+                return
+            threading.Thread(
+                target=self._batch_summarize, args=(group_name,), daemon=True
+            ).start()
+        finally:
+            self._release_front()
+
     def _batch_summarize(self, group_name):
         """Batch summarize all chats in a group."""
-        self._summarizing = True
-        self._set_status(ICON_LOADING)
+        self._begin_task(f"批量总结：{group_name}")
 
         try:
             chat_usernames = get_group_chats(group_name)
@@ -2059,6 +2131,7 @@ class WeChatSummaryApp(rumps.App):
             total_msgs = 0
 
             for username in chat_usernames:
+                self._check_cancelled()
                 chat_name = self._get_chat_display_name(username)
                 since_ts = get_bookmark(username)
 
@@ -2099,9 +2172,11 @@ class WeChatSummaryApp(rumps.App):
                 return
 
             print(f"[batch] 共 {total_msgs} 条消息，正在调用 AI...")
+            self._check_cancelled()
 
             prompt = self.ai.build_batch_prompt(group_name, groups_data)
             summary = self.ai.summarize(prompt)
+            self._check_cancelled()
 
             # Update bookmarks for all chats with messages
             for g in groups_data:
@@ -2133,12 +2208,15 @@ class WeChatSummaryApp(rumps.App):
 
             self._set_status(ICON_DONE)
 
+        except UserCancelled:
+            _notify("微信总结", "已停止", f"分组「{group_name}」批量总结已停止")
+            self._set_status(ICON_NORMAL)
         except Exception as e:
             _notify("微信总结", "批量总结失败", str(e))
             traceback.print_exc()
             self._set_status(ICON_ERROR)
         finally:
-            self._summarizing = False
+            self._finish_task()
 
     def _save_batch_summary(self, group_name, summary, groups_data, total_msgs):
         """Save batch summary."""
@@ -2412,8 +2490,7 @@ class WeChatSummaryApp(rumps.App):
 
     def _do_search(self, keywords, kw_str, usernames, start_ts, end_ts, use_ai):
         """Execute keyword search in background (read-only, does not modify any bookmarks or data)."""
-        self._summarizing = True
-        self._set_status(ICON_LOADING)
+        self._begin_task(f"搜索：{kw_str}")
 
         try:
             start_display = datetime.fromtimestamp(start_ts).strftime("%m-%d")
@@ -2463,6 +2540,7 @@ class WeChatSummaryApp(rumps.App):
 
             if use_ai:
                 # AI summary mode
+                self._check_cancelled()
                 if not self.ai:
                     try:
                         self.ai = create_provider(self.config)
@@ -2473,6 +2551,7 @@ class WeChatSummaryApp(rumps.App):
                 prompt = self.ai.build_search_prompt(kw_str, results, start_display, end_display)
                 print(f"[search] 正在调用 AI 总结...")
                 summary = self.ai.summarize(prompt)
+                self._check_cancelled()
 
                 filepath = self._save_search_result(
                     kw_str, results, total_count, start_display, end_display,
@@ -2501,12 +2580,15 @@ class WeChatSummaryApp(rumps.App):
             subprocess.run(["open", filepath])
             self._set_status(ICON_DONE)
 
+        except UserCancelled:
+            _notify("微信总结", "已停止", f"搜索「{kw_str}」已停止")
+            self._set_status(ICON_NORMAL)
         except Exception as e:
             _notify("微信总结", "搜索失败", str(e))
             traceback.print_exc()
             self._set_status(ICON_ERROR)
         finally:
-            self._summarizing = False
+            self._finish_task()
             # Safety net: ensure icon doesn't get stuck on ⏳
             if self.title == ICON_LOADING:
                 self._set_status(ICON_NORMAL)
