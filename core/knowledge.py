@@ -41,6 +41,14 @@ OBSIDIAN_INDEX_CATEGORIES = (
     "设计讨论",
     "群内八卦",
 )
+OBSIDIAN_CATEGORY_INDEX_FILENAME = "目录.md"
+OBSIDIAN_HOME_LINKS = tuple(
+    (
+        f"[[{OBSIDIAN_SUBDIR}/{category}]]",
+        f"[[{OBSIDIAN_SUBDIR}/{category}/目录|{category}]]",
+    )
+    for category in OBSIDIAN_INDEX_CATEGORIES
+)
 
 OBSIDIAN_APP_CONFIG = {
     "alwaysUpdateLinks": True,
@@ -99,13 +107,13 @@ OBSIDIAN_HOME_NOTE = """# 微信关注推送知识库
 
 ## 快速入口
 
-- [[关注推送/AI模型]]
-- [[关注推送/工具更新]]
-- [[关注推送/技术方法]]
-- [[关注推送/AI实验]]
-- [[关注推送/自建app]]
-- [[关注推送/设计讨论]]
-- [[关注推送/群内八卦]]
+- [[关注推送/AI模型/目录|AI模型]]
+- [[关注推送/工具更新/目录|工具更新]]
+- [[关注推送/技术方法/目录|技术方法]]
+- [[关注推送/AI实验/目录|AI实验]]
+- [[关注推送/自建app/目录|自建app]]
+- [[关注推送/设计讨论/目录|设计讨论]]
+- [[关注推送/群内八卦/目录|群内八卦]]
 
 ## 常用搜索
 
@@ -253,6 +261,64 @@ def _write_text_if_missing(path, text):
     return True
 
 
+def _write_or_migrate_home_note(path):
+    if not os.path.exists(path):
+        return _write_text_if_missing(path, OBSIDIAN_HOME_NOTE)
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            current = f.read()
+    except OSError:
+        return False
+
+    if not current.startswith("# 微信关注推送知识库"):
+        return False
+
+    updated = current
+    for old_link, new_link in OBSIDIAN_HOME_LINKS:
+        updated = updated.replace(f"- {old_link}", f"- {new_link}")
+    if updated == current:
+        return False
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(updated)
+        return True
+    except OSError:
+        return False
+
+
+def _category_index_text(category):
+    return f"""# {category}
+
+```query
+path:"{OBSIDIAN_SUBDIR}/{category}"
+```
+"""
+
+
+def _remove_generated_legacy_category_index(root, category):
+    legacy_rel_path = os.path.join(OBSIDIAN_SUBDIR, f"{safe_path_part(category)}.md")
+    legacy_path = os.path.join(root, legacy_rel_path)
+    if not os.path.isfile(legacy_path):
+        return False
+
+    try:
+        with open(legacy_path, encoding="utf-8") as f:
+            current = f.read().strip()
+    except OSError:
+        return False
+
+    if current != _category_index_text(category).strip():
+        return False
+
+    try:
+        os.remove(legacy_path)
+        return True
+    except OSError:
+        return False
+
+
 def ensure_obsidian_vault(obsidian_root=OBSIDIAN_ROOT, include_app_config=None):
     """Create the app-owned Obsidian vault shell without touching custom vault UI."""
     root = os.path.expanduser(obsidian_root or OBSIDIAN_ROOT)
@@ -273,20 +339,19 @@ def ensure_obsidian_vault(obsidian_root=OBSIDIAN_ROOT, include_app_config=None):
         created.append(".obsidian/core-plugins.json")
     if _write_json_if_missing(os.path.join(obsidian_dir, "appearance.json"), OBSIDIAN_APPEARANCE_CONFIG):
         created.append(".obsidian/appearance.json")
-    if _write_text_if_missing(os.path.join(root, "首页.md"), OBSIDIAN_HOME_NOTE):
+    if _write_or_migrate_home_note(os.path.join(root, "首页.md")):
         created.append("首页.md")
 
     for category in OBSIDIAN_INDEX_CATEGORIES:
-        filename = f"{safe_path_part(category)}.md"
-        text = f"""# {category}
-
-```query
-path:"{OBSIDIAN_SUBDIR}/{category}"
-```
-"""
-        rel_path = os.path.join(OBSIDIAN_SUBDIR, filename)
+        rel_path = os.path.join(
+            OBSIDIAN_SUBDIR,
+            safe_path_part(category),
+            OBSIDIAN_CATEGORY_INDEX_FILENAME,
+        )
+        text = _category_index_text(category)
         if _write_text_if_missing(os.path.join(root, rel_path), text):
             created.append(rel_path)
+        _remove_generated_legacy_category_index(root, category)
 
     return {"root": root, "created": created}
 

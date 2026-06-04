@@ -47,7 +47,7 @@ macOS 菜单栏应用，一键总结微信群聊消息。
 2. 在 Obsidian 里打开默认 vault：`~/.wechat-summary/obsidian_knowledge`
 3. 如果已有自己的 vault，在菜单栏「关注推送 → 设置 Obsidian 仓库位置...」里填你的 vault 根目录
 
-程序会给默认 vault 自动生成基础 `.obsidian` 配置、`首页.md` 和分类索引；如果你设置到自己的 vault，只会写入 `关注推送/` 子目录，不覆盖你的 Obsidian 界面配置。
+程序会给默认 vault 自动生成基础 `.obsidian` 配置、`首页.md` 和 `关注推送/<分类>/目录.md` 分类索引；如果你设置到自己的 vault，只会写入 `关注推送/` 子目录，不覆盖你的 Obsidian 界面配置。
 
 ### MCP Server — 让你的 AI Agent 直接读微信
 

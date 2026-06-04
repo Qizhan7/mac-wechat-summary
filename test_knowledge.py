@@ -4,7 +4,12 @@ import sqlite3
 import tempfile
 import unittest
 
-from core.knowledge import KnowledgeStore, ensure_obsidian_vault, safe_path_part
+from core.knowledge import (
+    OBSIDIAN_CATEGORY_INDEX_FILENAME,
+    KnowledgeStore,
+    ensure_obsidian_vault,
+    safe_path_part,
+)
 
 
 def msg(ts, sender, text):
@@ -87,7 +92,9 @@ class KnowledgeStoreTests(unittest.TestCase):
         self.assertIn(".obsidian/app.json", seeded["created"])
         self.assertTrue(os.path.exists(os.path.join(self.obsidian_root, ".obsidian", "app.json")))
         self.assertTrue(os.path.exists(os.path.join(self.obsidian_root, "首页.md")))
-        self.assertTrue(os.path.exists(os.path.join(self.obsidian_root, "关注推送", "AI模型.md")))
+        self.assertTrue(os.path.exists(
+            os.path.join(self.obsidian_root, "关注推送", "AI模型", OBSIDIAN_CATEGORY_INDEX_FILENAME)
+        ))
 
         home = os.path.join(self.obsidian_root, "首页.md")
         with open(home, "w", encoding="utf-8") as f:
@@ -98,6 +105,38 @@ class KnowledgeStoreTests(unittest.TestCase):
         self.assertEqual(seeded_again["created"], [])
         with open(home, encoding="utf-8") as f:
             self.assertEqual(f.read(), "# custom\n")
+
+    def test_ensure_obsidian_vault_removes_generated_legacy_category_index_only(self):
+        monitor_root = os.path.join(self.obsidian_root, "关注推送")
+        os.makedirs(monitor_root, exist_ok=True)
+        generated_legacy = os.path.join(monitor_root, "工具更新.md")
+        custom_legacy = os.path.join(monitor_root, "AI模型.md")
+        with open(generated_legacy, "w", encoding="utf-8") as f:
+            f.write('# 工具更新\n\n```query\npath:"关注推送/工具更新"\n```\n')
+        with open(custom_legacy, "w", encoding="utf-8") as f:
+            f.write("# AI模型\n\n我自己写的内容\n")
+
+        ensure_obsidian_vault(self.obsidian_root, include_app_config=True)
+
+        self.assertFalse(os.path.exists(generated_legacy))
+        self.assertTrue(os.path.exists(custom_legacy))
+        self.assertTrue(os.path.exists(
+            os.path.join(self.obsidian_root, "关注推送", "工具更新", OBSIDIAN_CATEGORY_INDEX_FILENAME)
+        ))
+
+    def test_ensure_obsidian_vault_migrates_generated_home_links(self):
+        os.makedirs(self.obsidian_root, exist_ok=True)
+        home = os.path.join(self.obsidian_root, "首页.md")
+        with open(home, "w", encoding="utf-8") as f:
+            f.write("# 微信关注推送知识库\n\n- [[关注推送/AI模型]]\n- [[关注推送/工具更新]]\n")
+
+        ensure_obsidian_vault(self.obsidian_root, include_app_config=True)
+
+        with open(home, encoding="utf-8") as f:
+            md = f.read()
+        self.assertIn("[[关注推送/AI模型/目录|AI模型]]", md)
+        self.assertIn("[[关注推送/工具更新/目录|工具更新]]", md)
+        self.assertNotIn("[[关注推送/AI模型]]", md)
 
     def test_custom_obsidian_vault_only_creates_monitor_subdir_by_default(self):
         custom_root = os.path.join(self.tmp.name, "custom-vault")
