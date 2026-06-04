@@ -150,18 +150,19 @@ def _notify(title, subtitle, message):
     subtitle = _notification_text(subtitle, 180)
     message = _notification_text(message, 700)
 
+    if sys.platform == "darwin":
+        try:
+            _notify_with_osascript(title, subtitle, message)
+            print(f"[notify] osascript ok: {title} / {subtitle}")
+            return
+        except Exception as e:
+            print(f"[notify] osascript failed: {e}")
+
     try:
         rumps.notification(title, subtitle, message)
         return
     except Exception as e:
         print(f"[notify] rumps failed: {e}")
-
-    if sys.platform == "darwin":
-        try:
-            _notify_with_osascript(title, subtitle, message)
-            return
-        except Exception as e:
-            print(f"[notify] osascript failed: {e}")
 
     print(f"[{title}] {subtitle}: {message}")
 
