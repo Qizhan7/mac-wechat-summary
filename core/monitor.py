@@ -117,7 +117,14 @@ class TopicMonitor:
         since_ts = self._get_since_ts(state, dry_run)
         max_messages = self.config.get("monitor_max_messages_per_run", 200)
 
-        messages = self.db.get_messages(username, since_ts=since_ts, limit=max_messages)
+        query_since_ts = self._get_query_since_ts(since_ts)
+        query_limit = max_messages + self._context_max_messages()
+        scanned_messages = self.db.get_messages(username, since_ts=query_since_ts, limit=query_limit)
+        context_messages, messages = self._split_context_messages(
+            scanned_messages,
+            since_ts,
+            max_messages,
+        )
         if not messages:
             return {"status": "no_messages", "message": "没有新消息"}
 
@@ -125,9 +132,18 @@ class TopicMonitor:
             messages,
             show_group_nickname=self.config.get("show_group_nickname", True),
         )
-        link_context = self._build_link_context(messages)
-        decision = self._evaluate(messages, messages_text, topic, link_context)
-        normalized = self._normalize_decision(decision, messages)
+        context_text = self.db.format_messages_for_ai(
+            context_messages,
+            show_group_nickname=self.config.get("show_group_nickname", True),
+        ) if context_messages else ""
+        source_messages = self._source_messages(context_messages, messages)
+        source_messages_text = self.db.format_messages_for_ai(
+            source_messages,
+            show_group_nickname=self.config.get("show_group_nickname", True),
+        )
+        link_context = self._build_link_context(source_messages)
+        decision = self._evaluate(messages, messages_text, topic, link_context, context_text)
+        normalized = self._normalize_decision(decision, source_messages)
 
         last_msg_ts = messages[-1]["timestamp"]
         result = {
@@ -148,8 +164,8 @@ class TopicMonitor:
         if self._knowledge_enabled():
             knowledge_result = self._process_with_knowledge(
                 normalized,
-                messages,
-                messages_text,
+                source_messages,
+                source_messages_text,
                 dry_run=dry_run,
             )
             result.update(knowledge_result)
@@ -164,7 +180,7 @@ class TopicMonitor:
 
             if result.get("relation") in RELATION_NOTIFY:
                 state["last_notified_ts"] = self.now_func()
-                hit_path = self._save_hit(messages, normalized)
+                hit_path = self._save_hit(source_messages, normalized)
                 result["hit_path"] = hit_path
             save_state(state, self.state_file)
             return result
@@ -183,7 +199,7 @@ class TopicMonitor:
         })
 
         if not dry_run:
-            hit_path = self._save_hit(messages, normalized)
+            hit_path = self._save_hit(source_messages, normalized)
             state["last_topic_key"] = normalized["topic_key"]
             state["last_notified_ts"] = self.now_func()
             save_state(state, self.state_file)
@@ -199,6 +215,47 @@ class TopicMonitor:
             return float(state["last_checked_ts"])
         return 0
 
+    def _get_query_since_ts(self, since_ts):
+        overlap_seconds = self._context_overlap_seconds()
+        if since_ts <= 0 or overlap_seconds <= 0:
+            return since_ts
+        return max(0, since_ts - overlap_seconds)
+
+    def _context_overlap_seconds(self):
+        try:
+            minutes = int(self.config.get("monitor_context_overlap_minutes", 12))
+        except (TypeError, ValueError):
+            minutes = 12
+        return max(0, minutes) * 60
+
+    def _context_max_messages(self):
+        try:
+            limit = int(self.config.get("monitor_context_max_messages", 80))
+        except (TypeError, ValueError):
+            limit = 80
+        return max(0, limit)
+
+    def _split_context_messages(self, scanned_messages, since_ts, max_messages):
+        if since_ts <= 0 or self._context_overlap_seconds() <= 0:
+            return [], scanned_messages[-max_messages:]
+
+        context_limit = self._context_max_messages()
+        context_messages = [m for m in scanned_messages if float(m.get("timestamp", 0) or 0) <= since_ts]
+        messages = [m for m in scanned_messages if float(m.get("timestamp", 0) or 0) > since_ts]
+        if context_limit:
+            context_messages = context_messages[-context_limit:]
+        else:
+            context_messages = []
+        return context_messages, messages[-max_messages:]
+
+    @staticmethod
+    def _source_messages(context_messages, messages):
+        if not context_messages:
+            return messages
+        combined = context_messages + messages
+        combined.sort(key=lambda msg: float(msg.get("timestamp", 0) or 0))
+        return combined
+
     def _knowledge_enabled(self):
         return bool(self.config.get("monitor_knowledge_enabled", False))
 
@@ -209,6 +266,10 @@ class TopicMonitor:
 
     def _process_with_knowledge(self, decision, messages, messages_text, dry_run=False):
         candidate = normalize_candidate(decision)
+        candidate["source_chat"] = self.config.get("monitor_chat_display_name", "监控群聊")
+        if messages:
+            candidate["window_start"] = messages[0].get("time_str", "")
+            candidate["window_end"] = messages[-1].get("time_str", "")
         store = self._get_knowledge_store(dry_run=dry_run)
         candidates = store.find_candidates(candidate)
         relation_decision = self._classify_knowledge_relation(candidate, candidates, messages_text)
@@ -371,13 +432,13 @@ class TopicMonitor:
                 })
         return format_link_previews(previews)
 
-    def _evaluate(self, messages, messages_text, topic, link_context=""):
-        prompt = self._build_prompt(messages, messages_text, topic, link_context)
+    def _evaluate(self, messages, messages_text, topic, link_context="", context_text=""):
+        prompt = self._build_prompt(messages, messages_text, topic, link_context, context_text)
         if self.ai_evaluator:
             return self.ai_evaluator(prompt, self.config)
         return self._call_deepseek(prompt)
 
-    def _build_prompt(self, messages, messages_text, topic, link_context=""):
+    def _build_prompt(self, messages, messages_text, topic, link_context="", context_text=""):
         group_name = self.config.get("monitor_chat_display_name", "监控群聊")
         start_time = messages[0].get("time_str", "")
         end_time = messages[-1].get("time_str", "")
@@ -399,6 +460,10 @@ class TopicMonitor:
 {link_context or "无"}
 </link_context>
 
+<recent_context>
+{context_text or "无"}
+</recent_context>
+
 <decision_policy>
 1. 先理解用户关注描述背后的真实意图，包括用户想知道的对象、事件、变化、机会、风险、情绪或提醒。
 2. 从新增消息中聚合 0-3 个候选话题；不要逐条消息机械判断，也不要只按关键词判断。
@@ -416,6 +481,7 @@ class TopicMonitor:
 10. 如果同一时间窗里有多个候选都达到通知门槛，不要只保留最热门、最严肃或最后出现的一条；digest 可以同时列出多个话题，title 和 topic_key 用能覆盖这些话题的稳定短语。
 11. 如果消息讨论的是 AI/agent/模型互动实验、可玩玩法、角色/场景测试、模型行为边界或偏好反馈，即使语气轻松、带玩笑或关系向表达，也要先按大类判断是否有方法、结果或启发；不要按单个敏感词字面过滤或命中。
 12. link_context 是程序尝试展开链接后的辅助材料：如果有标题/摘要，可以结合原消息判断链接内容；如果状态是 unavailable、error 或 unsupported，必须承认链接正文不可见，不要臆造链接内容，只根据聊天上下文判断是否提醒。
+13. recent_context 是上一轮已经检查过的少量前文，只用来理解新增消息里的“这个/这样/对呀/role 不对”等省略、指代和断续讨论。不要因为 recent_context 自己有价值就通知；只有新增消息延续、补充、纠错或形成结论时，才把前文和新增内容合并成一个完整话题。
 </decision_policy>
 
 <negative_rules>
@@ -426,6 +492,7 @@ class TopicMonitor:
 - 没有明确证据消息支撑。
 - 只有单句暧昧暗示，缺少上下文，无法判断价值。
 - 纯玩笑或纯成人向闲聊，且看不出 AI/agent/模型互动实验、模型行为观察、方法或结果反馈。
+- 只有 recent_context 相关，但新增消息没有新事实、新结论、新链接、新做法或明确回应。
 注意：如果单句里已经包含明确产品/项目/模型/工具名，加上新功能、更新、链接、教程、实验结果、修复方案或可执行做法，它不是“无上下文的新消息”，可以通知。
 注意：如果用户关注描述本身就是轻松、情绪、关系、家庭或生活类内容，相关的玩笑、趣事、近况、反应和情绪变化可以通知；不要因为它不是严肃信息就判为无价值。
 </negative_rules>

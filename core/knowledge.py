@@ -956,7 +956,86 @@ class KnowledgeStore:
         for token in re.findall(r"[0-9A-Za-z_\-.]{3,}|[\u4e00-\u9fff]{2,}", candidate.get("title", "").lower()):
             if token in haystack:
                 score += 8
+        score += self._continuity_boost(candidate, row)
         return score
+
+    def _continuity_boost(self, candidate, row):
+        """Prefer nearby same-chat topics so interrupted discussions can stitch together."""
+        source_chat = str(candidate.get("source_chat") or "").strip()
+        if not source_chat or source_chat != row["source_chat"]:
+            return 0
+
+        if not self._has_continuity_signal(candidate, row):
+            return 0
+
+        candidate_ts = self._parse_note_ts(
+            candidate.get("window_start")
+            or candidate.get("first_seen")
+            or candidate.get("window_end")
+            or candidate.get("last_seen")
+        )
+        row_ts = self._parse_note_ts(row["last_seen"] or row["first_seen"])
+        if not candidate_ts or not row_ts:
+            return 0
+
+        gap_minutes = abs(candidate_ts - row_ts) / 60
+        if gap_minutes <= 15:
+            return 65
+        if gap_minutes <= 60:
+            return 40
+        if gap_minutes <= 120:
+            return 20
+        return 0
+
+    def _has_continuity_signal(self, candidate, row):
+        candidate_links = {x.lower() for x in candidate.get("links") or []}
+        row_links = {x.lower() for x in _json_loads(row["links_json"])}
+        if candidate_links & row_links:
+            return True
+
+        weak_entities = {
+            "ai", "claude", "openai", "anthropic", "opus", "haiku",
+            "gpt", "gemini", "deepseek", "46", "47", "48", "336",
+        }
+        candidate_entities = {self._entity_key(x) for x in candidate.get("entities") or []}
+        row_entities = {self._entity_key(x) for x in _json_loads(row["entities_json"])}
+        shared_entities = {x for x in candidate_entities & row_entities if x and x not in weak_entities}
+        if shared_entities:
+            return True
+
+        candidate_text = " ".join([
+            candidate.get("title", ""),
+            candidate.get("summary", ""),
+            " ".join(candidate.get("key_facts") or []),
+        ])
+        row_text = " ".join([
+            row["title"],
+            row["summary"],
+            " ".join(_json_loads(row["key_facts_json"])),
+        ])
+        shared_count, overlap = self._title_overlap(candidate_text, row_text)
+        return shared_count >= 2 or overlap >= 0.35
+
+    @staticmethod
+    def _entity_key(value):
+        chars = []
+        for ch in str(value or "").lower():
+            if unicodedata.category(ch)[0] in {"L", "N"}:
+                chars.append(ch)
+        return "".join(chars)
+
+    @staticmethod
+    def _parse_note_ts(value):
+        text = str(value or "").strip()
+        match = re.search(r"\d{4}-\d{2}-\d{2}\s+\d{2}[:\-]\d{2}", text)
+        if not match:
+            return 0
+        date_part, time_part = match.group(0).split()
+        stamp = f"{date_part} {time_part.replace('-', ':')}"
+        try:
+            return datetime.strptime(stamp, "%Y-%m-%d %H:%M").timestamp()
+        except ValueError:
+            return 0
 
     # ── 维护：去重合并 + 全量重导出 ──────────────────────────
 

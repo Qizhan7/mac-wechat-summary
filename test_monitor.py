@@ -159,6 +159,36 @@ class TopicMonitorTests(unittest.TestCase):
         self.assertIn("消息51", seen_prompt[0])
         self.assertNotIn("消息50", seen_prompt[0])
 
+    def test_recent_context_is_included_without_counting_as_new(self):
+        save_state({"last_checked_ts": 100}, self.state_file)
+        db = FakeDB([
+            msg(95, "把会变化的 block 放在断点后面"),
+            msg(101, "role 需要是 user，不然会破坏缓存"),
+        ])
+        seen_prompt = []
+
+        result = self.monitor(
+            db,
+            lambda prompt, *_: seen_prompt.append(prompt) or {"match": False, "score": 20},
+        ).check_once()
+
+        self.assertEqual(result["status"], "no_match")
+        self.assertEqual(result["message_count"], 1)
+        self.assertEqual(load_state(self.state_file)["last_checked_ts"], 101)
+        self.assertIn("<recent_context>", seen_prompt[0])
+        self.assertIn("把会变化的 block 放在断点后面", seen_prompt[0])
+        self.assertIn("role 需要是 user", seen_prompt[0])
+
+    def test_only_recent_context_does_not_call_ai(self):
+        save_state({"last_checked_ts": 100}, self.state_file)
+        called = []
+        db = FakeDB([msg(95, "把会变化的 block 放在断点后面")])
+
+        result = self.monitor(db, lambda *_: called.append(True)).check_once()
+
+        self.assertEqual(result["status"], "no_messages")
+        self.assertEqual(called, [])
+
     def test_dry_run_does_not_update_state(self):
         self.config["monitor_interval_minutes"] = 999
         save_state({"last_checked_ts": 10}, self.state_file)

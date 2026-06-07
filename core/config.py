@@ -27,6 +27,8 @@ DEFAULT_CONFIG = {
     "monitor_chat_display_name": "Claude恋爱技术群",
     "monitor_topic": "",
     "monitor_max_messages_per_run": 200,
+    "monitor_context_overlap_minutes": 12,
+    "monitor_context_max_messages": 80,
     "monitor_cooldown_minutes": 15,
     "monitor_fetch_links": True,
     "monitor_max_links_per_run": 5,
@@ -75,6 +77,8 @@ def _sanitize_config(saved):
         "hide_inactive_months": (0, 60),
         "monitor_interval_minutes": (1, 1440),
         "monitor_max_messages_per_run": (1, 1000),
+        "monitor_context_overlap_minutes": (0, 120),
+        "monitor_context_max_messages": (0, 300),
         "monitor_cooldown_minutes": (0, 1440),
         "monitor_max_links_per_run": (0, 20),
     }

@@ -259,6 +259,59 @@ class KnowledgeStoreTests(unittest.TestCase):
         self.assertEqual(len(related), 1)
         self.assertEqual(related[0]["target_topic_id"], topic_a)
 
+    def test_find_candidates_prefers_recent_same_chat_continuation(self):
+        self.store.apply_event(
+            candidate(
+                title="Claude 4.8 大版本体验讨论",
+                topic_key="claude-4.8-broad",
+                summary="1. 【03:05】群里泛聊 Claude 4.8 的模型体验。",
+                entities=["Claude", "4.8", "局外猫"],
+                key_facts=["Claude 4.8 的模型体验被多次讨论"],
+                links=[],
+            ),
+            [msg(5, "局外猫", "4.8 体验挺乱的")],
+            self.config,
+            {"relation": "new"},
+        )
+        recent = self.store.apply_event(
+            candidate(
+                title="Claude缓存与工具调用优化讨论",
+                topic_key="claude-cache-tool-impact",
+                summary="1. 【03:19】群友提到工具调用会破坏 Claude API 缓存，建议放在断点后。",
+                entities=["Claude", "Taiyaki", "兔蛙旋转"],
+                key_facts=[
+                    "调用MCP工具会降低Claude API缓存命中率",
+                    "将工具说明放在断点后可避免缓存破坏",
+                ],
+                links=[],
+            ),
+            [
+                msg(19, "Taiyaki", "工具说明好多"),
+                msg(20, "兔蛙旋转", "放在断点后面也不行吗"),
+            ],
+            self.config,
+            {"relation": "new"},
+        )
+
+        candidates = self.store.find_candidates(
+            candidate(
+                title="群友讨论Claude显式断点与4.8缓存优化",
+                topic_key="explicit-breakpoint-cache",
+                summary="1. 【03:22】兔蛙旋转补充变化 block 放在断点后，role 需要是 user。",
+                entities=["Claude", "4.8", "Taiyaki", "兔蛙旋转"],
+                key_facts=[
+                    "显式断点可以放在变化block前，保持前缀稳定",
+                    "变化block放在断点后且role需为user",
+                ],
+                links=[],
+                source_chat="Claude恋爱技术群",
+                window_start="2026-05-29 03:22",
+            ),
+            limit=3,
+        )
+
+        self.assertEqual(candidates[0]["topic_id"], recent["topic_id"])
+
     def test_run_maintenance_merges_duplicate_topics(self):
         self.store.apply_event(candidate(), self.messages, self.config, {"relation": "new"})
         self.store.apply_event(
